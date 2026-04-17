@@ -13,3 +13,6 @@ wheels/
 .claude/
 scripts/
 thoughts/
+
+# Local working notes
+FOLLOWUPS.md
