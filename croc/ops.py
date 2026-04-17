@@ -25,6 +25,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from typing import Iterable
 
 import yaml
@@ -183,91 +184,241 @@ def init_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
     return [action]
 
 
-def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
-    """Scaffold frontmatter into every `.md` under `root` that lacks it.
+@dataclass
+class _AdoptEntry:
+    path: pathlib.Path
+    new_content: str
+    proposed_id: str
+    verb: str  # "SCAFFOLD" or "AUGMENT (added: ...)"
+    is_new_id: bool  # True if the id is newly derived; False if it was already on disk
 
-    - Files starting with `---\\n` are left alone (treated as managed already).
-    - Files without any frontmatter get a minimal scaffold with a slugified id.
-    - All proposed ids are validated for uniqueness against each other and
-      against any existing managed files; collisions abort with a clear list.
+
+def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
+    """Bring every `.md` under `root` into the managed croc schema.
+
+    Three outcomes per file:
+
+    - **SCAFFOLD** — file has no frontmatter. Prepend a new block with a
+      derived id (see `_propose_id`), a title, a kind, and empty `links`.
+    - **AUGMENT** — file has frontmatter but is missing one or more of the
+      required fields (`id`, `title`, `kind`, `links`). Fill in what's
+      missing; preserve every existing key verbatim (including foreign
+      fields like `type`, `mirrors`, `created`, ...).
+    - **SKIP** — file has frontmatter we can't safely touch (unterminated,
+      invalid YAML, existing `id` doesn't match the grammar). Report a
+      note so the author can fix it by hand.
+
+    Fully-managed files (all four required fields present + id valid) are
+    left alone. Ids are checked for collision across proposed ids and
+    against any ids already on disk; collisions abort with a clear list.
     """
     root = root.resolve()
     if not root.is_dir():
         raise OpError(f"{root}: not a directory")
 
-    # Phase 1: scan. Collect (a) existing ids from already-managed files,
-    # (b) plan of scaffolds for unmanaged files, (c) skips for malformed ones.
+    # Phase 1: scan and classify. Mutates existing_ids + skip_notes.
     existing_ids: dict[str, pathlib.Path] = {}
-    plan: dict[pathlib.Path, tuple[str, str]] = {}  # abs_path -> (new_content, proposed_id)
+    plan: list[_AdoptEntry] = []
     skip_notes: list[str] = []
 
     for p in sorted(root.rglob("*.md")):
-        raw = p.read_text()
-        if raw.startswith("---\n"):
-            try:
-                fm, _ = parse_frontmatter(p, raw)
-                existing_ids[fm["id"]] = p
-            except TreeError as e:
-                skip_notes.append(
-                    f"SKIP {p.relative_to(root)}: malformed frontmatter "
-                    f"({str(e).split(':', 1)[-1].strip()})"
-                )
-            continue
+        entry = _classify_for_adopt(p, root, existing_ids, skip_notes)
+        if entry is not None:
+            plan.append(entry)
 
-        proposed_id = _slugify(p.stem)
-        if not proposed_id or not ID_RE.fullmatch(proposed_id):
-            raise OpError(
-                f"{p.relative_to(root)}: cannot derive a valid id from "
-                f"filename; rename the file or add frontmatter manually"
-            )
-        kind = "self" if p.name == "self.md" else "leaf"
-        title = _title_from_stem(p.stem)
-        new_content = _scaffold_content(proposed_id, title, kind, raw)
-        plan[p] = (new_content, proposed_id)
-
-    # Phase 2: collision detection. Check proposed ids against existing ids
-    # and against each other.
+    # Phase 2: collision detection. Only newly-derived ids can collide;
+    # pre-existing ids are the ground truth on disk.
     collisions: list[str] = []
     seen_proposed: dict[str, pathlib.Path] = {}
-    for p, (_, pid) in plan.items():
+    for entry in plan:
+        if not entry.is_new_id:
+            continue
+        pid = entry.proposed_id
         if pid in existing_ids:
             collisions.append(
-                f"{p.relative_to(root)}: proposed id {pid!r} is already used "
-                f"by {existing_ids[pid].relative_to(root)}"
+                f"{entry.path.relative_to(root)}: proposed id {pid!r} is already "
+                f"used by {existing_ids[pid].relative_to(root)}"
             )
         elif pid in seen_proposed:
             collisions.append(
-                f"{p.relative_to(root)} and "
-                f"{seen_proposed[pid].relative_to(root)} both slugify to {pid!r}"
+                f"{entry.path.relative_to(root)} and "
+                f"{seen_proposed[pid].relative_to(root)} both propose id {pid!r}"
             )
         else:
-            seen_proposed[pid] = p
+            seen_proposed[pid] = entry.path
 
     if collisions:
         raise OpError(
-            "id collisions detected; resolve by renaming files:\n  "
+            "id collisions detected; resolve by renaming files or editing ids:\n  "
             + "\n  ".join(collisions)
         )
 
     actions = list(skip_notes)
-    for p, (_, pid) in plan.items():
-        actions.append(f"SCAFFOLD {p.relative_to(root)} (id: {pid})")
+    for entry in plan:
+        actions.append(
+            f"{entry.verb} {entry.path.relative_to(root)} (id: {entry.proposed_id})"
+        )
 
     if dry_run:
         return actions
 
-    # Phase 3: commit. Atomic per-file, no snapshot needed because we're
-    # only touching files that had no frontmatter — body content is preserved
-    # verbatim inside the scaffold, so the "rollback" of a bad write is to
-    # re-run the command.
-    for p, (new_content, _) in plan.items():
-        _atomic_write(p, new_content)
+    # Phase 3: commit. Atomic per-file. Body content is preserved verbatim
+    # in both scaffold and augment paths, so the "rollback" for a bad write
+    # is to re-run the command.
+    for entry in plan:
+        _atomic_write(entry.path, entry.new_content)
 
     return actions
 
 
+def _classify_for_adopt(
+    p: pathlib.Path,
+    root: pathlib.Path,
+    existing_ids: dict[str, pathlib.Path],
+    skip_notes: list[str],
+) -> _AdoptEntry | None:
+    """Classify one .md file. Mutates `existing_ids` and `skip_notes`.
+
+    Returns an `_AdoptEntry` if the file needs writing (SCAFFOLD or AUGMENT),
+    or None if the file is already managed or is being skipped.
+    """
+    raw = p.read_text()
+
+    # --- Case A: no frontmatter → SCAFFOLD ---
+    if not raw.startswith("---\n"):
+        proposed_id = _propose_id(p, root)
+        if not proposed_id or not ID_RE.fullmatch(proposed_id):
+            raise OpError(
+                f"{p.relative_to(root)}: cannot derive a valid id from path "
+                f"(got {proposed_id!r}); rename the file or add frontmatter manually"
+            )
+        kind = "self" if p.name == "self.md" else "leaf"
+        title = _propose_title(p, root)
+        new_content = _scaffold_content(proposed_id, title, kind, raw)
+        return _AdoptEntry(
+            path=p,
+            new_content=new_content,
+            proposed_id=proposed_id,
+            verb="SCAFFOLD",
+            is_new_id=True,
+        )
+
+    # --- File has frontmatter. Parse leniently; don't require croc schema. ---
+    parts = raw.split("---\n", 2)
+    if len(parts) < 3:
+        skip_notes.append(
+            f"SKIP {p.relative_to(root)}: unterminated frontmatter"
+        )
+        return None
+    _, fm_text, body = parts
+    try:
+        fm = yaml.safe_load(fm_text) or {}
+    except yaml.YAMLError as e:
+        skip_notes.append(
+            f"SKIP {p.relative_to(root)}: invalid YAML "
+            f"({str(e).splitlines()[0]})"
+        )
+        return None
+    if not isinstance(fm, dict):
+        skip_notes.append(
+            f"SKIP {p.relative_to(root)}: frontmatter must be a mapping"
+        )
+        return None
+
+    # If an id is present, it must be a valid one; we refuse to silently fix it.
+    if "id" in fm and (
+        not isinstance(fm["id"], str) or not ID_RE.fullmatch(fm["id"])
+    ):
+        skip_notes.append(
+            f"SKIP {p.relative_to(root)}: existing `id` is not a valid string; "
+            f"fix manually then re-run"
+        )
+        return None
+
+    # --- Case B: already fully managed → no write ---
+    required = ("id", "title", "kind", "links")
+    if all(f in fm for f in required):
+        existing_ids[fm["id"]] = p
+        return None
+
+    # --- Case C: has frontmatter but is missing required fields → AUGMENT ---
+    augmented = dict(fm)  # preserve all existing fields and their order
+    added: list[str] = []
+    is_new_id = False
+
+    if "id" not in augmented:
+        proposed_id = _propose_id(p, root)
+        if not proposed_id or not ID_RE.fullmatch(proposed_id):
+            raise OpError(
+                f"{p.relative_to(root)}: cannot derive a valid id from path "
+                f"(got {proposed_id!r}); add `id` manually"
+            )
+        augmented["id"] = proposed_id
+        added.append("id")
+        is_new_id = True
+    if "title" not in augmented:
+        augmented["title"] = _propose_title(p, root)
+        added.append("title")
+    if "kind" not in augmented:
+        augmented["kind"] = "self" if p.name == "self.md" else "leaf"
+        added.append("kind")
+    if "links" not in augmented:
+        augmented["links"] = []
+        added.append("links")
+
+    new_content = _render_augmented(augmented, body)
+
+    # If the id was already on disk, it's a real claim — track it so other
+    # files' proposed ids can collide against it.
+    if not is_new_id:
+        existing_ids[augmented["id"]] = p
+
+    return _AdoptEntry(
+        path=p,
+        new_content=new_content,
+        proposed_id=augmented["id"],
+        verb=f"AUGMENT (added: {', '.join(added)})",
+        is_new_id=is_new_id,
+    )
+
+
+def _propose_id(path: pathlib.Path, root: pathlib.Path) -> str:
+    """Derive a proposed id from the file's full path under the tree root.
+
+    Hierarchical by default, for two reasons:
+
+    1. Filesystem paths are unique by OS invariant, so path-derived ids
+       are unique by construction — no collision-fallback heuristic
+       required, no order-dependent "who claimed the short id first."
+    2. Matches Rust's module convention: `transforms::utils::alerts` is
+       the canonical name; the short form only works when unambiguous.
+       Code-adjacent doc trees (mirroring a repo) already disambiguate
+       by path, not filename, and this makes croc honor that.
+
+    Examples:
+    - `foo.md` (root) → `foo`
+    - `sub/foo.md` → `sub-foo`
+    - `transforms/utils/__init__.md` → `transforms-utils-init`
+    - `alerts/self.md` → `alerts` (directory-index convention)
+    - `self.md` (root) → `root`
+    """
+    rel = path.relative_to(root)
+    if path.name == "self.md":
+        rel_parent = rel.parent
+        if str(rel_parent) == ".":
+            return "root"
+        return _slugify(
+            str(rel_parent).replace(os.sep, "/").replace("/", "-")
+        )
+    # Other files: slugify the full relative path minus the extension.
+    without_ext = rel.with_suffix("")
+    return _slugify(
+        str(without_ext).replace(os.sep, "/").replace("/", "-")
+    )
+
+
 def _slugify(name: str) -> str:
-    """Filename stem → lowercase alphanumeric-and-hyphen id."""
+    """Lowercase alphanumeric-and-hyphen slug."""
     s = name.lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     return s.strip("-")
@@ -279,13 +430,34 @@ def _title_from_stem(stem: str) -> str:
     return " ".join(w.capitalize() for w in words) or stem
 
 
+def _propose_title(path: pathlib.Path, root: pathlib.Path) -> str:
+    """Human-readable title. For `self.md`, uses the directory name so an
+    index file reads as `Alerts` instead of the useless `Self`."""
+    if path.name == "self.md":
+        rel_parent = path.parent.relative_to(root)
+        if str(rel_parent) == ".":
+            return "Root"
+        return _title_from_stem(rel_parent.name)
+    return _title_from_stem(path.stem)
+
+
 def _scaffold_content(id_: str, title: str, kind: str, original_body: str) -> str:
     """Produce a full markdown file with scaffolded frontmatter + original body."""
     fm = {"id": id_, "title": title, "kind": kind, "links": []}
-    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=False)
+    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
     body = original_body
     if body and not body.startswith("\n"):
         body = "\n" + body
+    return f"---\n{fm_yaml}---\n{body}"
+
+
+def _render_augmented(fm: dict, body: str) -> str:
+    """Render a file with augmented frontmatter; body passed through verbatim.
+
+    Key order is preserved (CPython 3.7+ dicts are ordered), so existing
+    fields keep their position and new fields append at the end.
+    """
+    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
     return f"---\n{fm_yaml}---\n{body}"
 
 

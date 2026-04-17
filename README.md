@@ -89,14 +89,24 @@ If any step fails, nothing is written.
 
 ### `croc init [path] [--adopt] [--dry-run]`
 
-Creates a `.croc.toml` marker at `path`. With `--adopt`, scaffolds frontmatter into every `.md` that lacks it:
+Creates a `.croc.toml` marker at `path`. With `--adopt`, brings every `.md` into the managed schema in one of three ways:
 
-- `id`: slugified filename (`Some File.md` → `id: some-file`)
-- `kind`: `self` for `self.md`, `leaf` otherwise
-- `title`: Title Case of stem
-- `links: []`
+- **SCAFFOLD** — no frontmatter. Prepend a fresh block.
+- **AUGMENT** — has frontmatter but missing required fields. Fill in `id`/`title`/`kind`/`links` while preserving every existing key and its order (foreign fields like `type`, `mirrors`, `created`, ... survive untouched).
+- **SKIP** — has frontmatter we can't safely modify (unterminated, invalid YAML, malformed existing `id`). The author fixes by hand.
 
-Collisions (two files that slugify to the same id) are reported and the command refuses to write.
+Proposed ids are **hierarchical** — slugified relative path, not just the filename — so code-adjacent trees with lots of repeated stems (`__init__.md`, per-customer folders, etc.) don't collide:
+
+| Path                                              | Proposed id                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `foo.md` (root)                                   | `foo`                                    |
+| `sub/foo.md`                                      | `sub-foo`                                |
+| `pkg/utils/__init__.md`                           | `pkg-utils-init`                         |
+| `regions/east/notes.md`                           | `regions-east-notes`                     |
+| `alerts/self.md`                                  | `alerts` (directory-index convention)    |
+| `self.md` (root)                                  | `root`                                   |
+
+Collisions (rare path-slug ambiguities, or `foo.md` at root competing with `foo/self.md`) are reported and the command refuses to write.
 
 ### `--dry-run`
 

@@ -10,6 +10,7 @@ import pytest
 from croc.check import check, load_tree, parse_frontmatter
 from croc.ops import (
     OpError,
+    _propose_id,
     _slugify,
     _title_from_stem,
     adopt_tree,
@@ -248,10 +249,24 @@ class TestAdopt:
         assert any(a.startswith("SKIP") and "broken.md" in a for a in actions)
 
     def test_refuses_on_collision_between_proposed(self, tmp_path):
-        (tmp_path / "sub1").mkdir()
-        (tmp_path / "sub2").mkdir()
-        (tmp_path / "sub1/foo.md").write_text("x")
-        (tmp_path / "sub2/foo.md").write_text("y")
+        """Path-slug ambiguity: two different paths slugify to the same id.
+
+        `foo-bar/baz.md` and `foo/bar-baz.md` both slugify to `foo-bar-baz`.
+        Hierarchical derivation usually dodges collisions, but can't help
+        when the path components themselves alias under slugification.
+        """
+        (tmp_path / "foo-bar").mkdir()
+        (tmp_path / "foo").mkdir()
+        (tmp_path / "foo-bar/baz.md").write_text("x")
+        (tmp_path / "foo/bar-baz.md").write_text("y")
+        with pytest.raises(OpError, match="collisions"):
+            adopt_tree(tmp_path)
+
+    def test_refuses_on_collision_between_self_and_root_file(self, tmp_path):
+        """`foo.md` (root) and `foo/self.md` both propose `foo`."""
+        (tmp_path / "foo.md").write_text("x")
+        (tmp_path / "foo").mkdir()
+        (tmp_path / "foo/self.md").write_text("y")
         with pytest.raises(OpError, match="collisions"):
             adopt_tree(tmp_path)
 
@@ -286,6 +301,247 @@ class TestAdopt:
         (tmp_path / "sub/c.md").write_text("# c")
         adopt_tree(tmp_path)
         assert check(load_tree(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# adopt — brownfield migration (foreign frontmatter, self.md convention)
+# ---------------------------------------------------------------------------
+
+
+class TestAdoptBrownfield:
+    def test_augments_frontmatter_missing_only_id(self, tmp_path):
+        """File has foreign frontmatter but no `id` — adopt fills the gap."""
+        (tmp_path / "doc.md").write_text(
+            "---\ntype: foo\nauthor: jane\n---\n# body\n"
+        )
+        actions = adopt_tree(tmp_path)
+        assert any(a.startswith("AUGMENT") and "doc.md" in a for a in actions)
+        fm, _ = parse_frontmatter(
+            tmp_path / "doc.md", (tmp_path / "doc.md").read_text()
+        )
+        assert fm["id"] == "doc"
+        # Foreign fields preserved
+        assert fm["type"] == "foo"
+        assert fm["author"] == "jane"
+        # Missing croc fields filled
+        assert fm["kind"] == "leaf"
+        assert fm["links"] == []
+
+    def test_augment_preserves_complex_foreign_fields(self, tmp_path):
+        """type: directory-index, mirrors list, date strings — all preserved."""
+        (tmp_path / "alerts").mkdir()
+        (tmp_path / "alerts/self.md").write_text(
+            "---\n"
+            "type: directory-index\n"
+            "mirrors:\n"
+            "  - service-a\n"
+            "  - service-b\n"
+            'created: "2024-01-01"\n'
+            "last_updated_by: jesse\n"
+            "---\n\n"
+            "# Alerts\n"
+        )
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(
+            tmp_path / "alerts/self.md",
+            (tmp_path / "alerts/self.md").read_text(),
+        )
+        assert fm["type"] == "directory-index"
+        assert fm["mirrors"] == ["service-a", "service-b"]
+        assert fm["created"] == "2024-01-01"
+        assert fm["last_updated_by"] == "jesse"
+        # And the croc fields were added
+        assert fm["id"] == "alerts"
+        assert fm["kind"] == "self"
+        assert fm["links"] == []
+
+    def test_augment_skips_file_that_is_already_fully_managed(self, tmp_path, write_doc):
+        """A file with all four required croc fields gets no AUGMENT."""
+        write_doc(tmp_path, "managed.md", "managed")
+        before = (tmp_path / "managed.md").read_text()
+        actions = adopt_tree(tmp_path)
+        assert not any("managed.md" in a for a in actions)
+        assert (tmp_path / "managed.md").read_text() == before
+
+    def test_multiple_self_md_no_collision(self, tmp_path):
+        """Three sibling self.md files get distinct parent-dir-derived ids."""
+        for d in ("alerts", "runbooks", "adr"):
+            (tmp_path / d).mkdir()
+            (tmp_path / d / "self.md").write_text("# Index\n")
+        adopt_tree(tmp_path)  # should not raise
+        ids = {
+            parse_frontmatter(
+                tmp_path / d / "self.md",
+                (tmp_path / d / "self.md").read_text(),
+            )[0]["id"]
+            for d in ("alerts", "runbooks", "adr")
+        }
+        assert ids == {"alerts", "runbooks", "adr"}
+
+    def test_deep_self_md_uses_full_parent_path(self, tmp_path):
+        deep = tmp_path / "core-validations/service-a"
+        deep.mkdir(parents=True)
+        (deep / "self.md").write_text("# Index\n")
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(
+            deep / "self.md", (deep / "self.md").read_text()
+        )
+        assert fm["id"] == "core-validations-service-a"
+
+    def test_root_self_md_gets_root_id(self, tmp_path):
+        (tmp_path / "self.md").write_text("# Root\n")
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(
+            tmp_path / "self.md", (tmp_path / "self.md").read_text()
+        )
+        assert fm["id"] == "root"
+
+    def test_malformed_existing_id_is_skipped(self, tmp_path):
+        """An existing id that doesn't match the grammar is not auto-fixed."""
+        original = "---\nid: 12345\ntitle: t\n---\nbody"
+        (tmp_path / "doc.md").write_text(original)
+        actions = adopt_tree(tmp_path)
+        assert any(a.startswith("SKIP") and "doc.md" in a for a in actions)
+        assert (tmp_path / "doc.md").read_text() == original
+
+    def test_invalid_yaml_is_skipped(self, tmp_path):
+        (tmp_path / "doc.md").write_text('---\ntitle: "unclosed\n---\nbody')
+        actions = adopt_tree(tmp_path)
+        assert any(a.startswith("SKIP") and "invalid YAML" in a for a in actions)
+
+    def test_frontmatter_not_mapping_is_skipped(self, tmp_path):
+        (tmp_path / "doc.md").write_text("---\n- a\n- b\n---\nbody")
+        actions = adopt_tree(tmp_path)
+        assert any(a.startswith("SKIP") and "mapping" in a for a in actions)
+
+    def test_brownfield_end_to_end(self, tmp_path):
+        """A real-world brownfield shape survives adopt and passes check.
+
+        Mixed tree: foreign-frontmatter `self.md` files (with non-croc
+        schemas like `type: directory-index`), bare-body `self.md` deep
+        in the tree, and plain markdown leaves.
+        """
+        (tmp_path / "alerts").mkdir()
+        (tmp_path / "runbooks").mkdir()
+        (tmp_path / "core/service-a").mkdir(parents=True)
+        # Two self.md files with foreign (non-croc) frontmatter
+        (tmp_path / "alerts/self.md").write_text(
+            "---\ntype: directory-index\nmirrors:\n  - x\n---\n\n# Alerts\n"
+        )
+        (tmp_path / "runbooks/self.md").write_text(
+            "---\ntype: directory-index\n---\n\n# Runbooks\n"
+        )
+        # Deep self.md at a nested path
+        (tmp_path / "core/service-a/self.md").write_text("# Service A\n")
+        # Plain markdown leaves
+        (tmp_path / "alerts/fire.md").write_text("# Fire alert\n")
+        (tmp_path / "runbooks/onboarding.md").write_text("# Onboarding\n")
+        actions = adopt_tree(tmp_path)
+        # 2 AUGMENT (the foreign-frontmatter self.md's), 3 SCAFFOLD (deep self + 2 leaves)
+        assert sum("AUGMENT" in a for a in actions) == 2
+        assert sum("SCAFFOLD" in a for a in actions) == 3
+        # Tree is now sound
+        assert check(load_tree(tmp_path)) == []
+
+
+# ---------------------------------------------------------------------------
+# _propose_id
+# ---------------------------------------------------------------------------
+
+
+class TestProposeId:
+    def test_self_md_uses_parent_dir(self, tmp_path):
+        (tmp_path / "alerts").mkdir()
+        (tmp_path / "alerts/self.md").write_text("")
+        assert _propose_id(tmp_path / "alerts/self.md", tmp_path) == "alerts"
+
+    def test_deep_self_md_uses_full_parent_path(self, tmp_path):
+        (tmp_path / "a/b/c").mkdir(parents=True)
+        (tmp_path / "a/b/c/self.md").write_text("")
+        assert _propose_id(tmp_path / "a/b/c/self.md", tmp_path) == "a-b-c"
+
+    def test_root_self_md_returns_root(self, tmp_path):
+        (tmp_path / "self.md").write_text("")
+        assert _propose_id(tmp_path / "self.md", tmp_path) == "root"
+
+    def test_root_level_file_uses_bare_stem(self, tmp_path):
+        """Root-level files have no parent path, so id is just the stem."""
+        (tmp_path / "foo.md").write_text("")
+        assert _propose_id(tmp_path / "foo.md", tmp_path) == "foo"
+
+    def test_nested_file_uses_full_relative_path(self, tmp_path):
+        (tmp_path / "alerts").mkdir()
+        (tmp_path / "alerts/fire-alert.md").write_text("")
+        assert (
+            _propose_id(tmp_path / "alerts/fire-alert.md", tmp_path)
+            == "alerts-fire-alert"
+        )
+
+    def test_python_init_mirror_files_are_path_unique(self, tmp_path):
+        """`__init__.md` mirrored from `__init__.py` across a package tree.
+
+        Under stem-only derivation, every `__init__.md` slugifies to
+        `init` and all such files collide. Under hierarchical derivation,
+        each gets a path-unique id.
+        """
+        for d in ("pkg/utils", "pkg/submod/alpha", "pkg/submod/beta"):
+            (tmp_path / d).mkdir(parents=True)
+            (tmp_path / d / "__init__.md").write_text("")
+        ids = {
+            _propose_id(p, tmp_path)
+            for p in tmp_path.rglob("__init__.md")
+        }
+        assert ids == {
+            "pkg-utils-init",
+            "pkg-submod-alpha-init",
+            "pkg-submod-beta-init",
+        }
+
+    def test_sibling_dirs_with_same_stem_dont_collide(self, tmp_path):
+        """Per-tenant / per-region folder pattern: `{a,b,c}/notes.md`."""
+        for region in ("east", "west", "central"):
+            (tmp_path / "regions" / region).mkdir(parents=True)
+            (tmp_path / "regions" / region / "notes.md").write_text("")
+        ids = {
+            _propose_id(p, tmp_path)
+            for p in tmp_path.rglob("notes.md")
+        }
+        assert ids == {
+            "regions-east-notes",
+            "regions-west-notes",
+            "regions-central-notes",
+        }
+
+    def test_dir_with_non_alnum_chars_gets_slugified(self, tmp_path):
+        (tmp_path / "My Dir (v2)").mkdir()
+        (tmp_path / "My Dir (v2)/self.md").write_text("")
+        assert (
+            _propose_id(tmp_path / "My Dir (v2)/self.md", tmp_path)
+            == "my-dir-v2"
+        )
+
+
+class TestProposeTitle:
+    """Adopt picks a sensible `title` for self.md (dir name, not "Self")."""
+
+    def test_self_md_title_is_parent_dir_titled(self, tmp_path):
+        (tmp_path / "alerts").mkdir()
+        (tmp_path / "alerts/self.md").write_text("# x")
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(
+            tmp_path / "alerts/self.md",
+            (tmp_path / "alerts/self.md").read_text(),
+        )
+        assert fm["title"] == "Alerts"
+
+    def test_non_self_title_from_stem(self, tmp_path):
+        (tmp_path / "fire-alert.md").write_text("# x")
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(
+            tmp_path / "fire-alert.md",
+            (tmp_path / "fire-alert.md").read_text(),
+        )
+        assert fm["title"] == "Fire Alert"
 
 
 # ---------------------------------------------------------------------------
