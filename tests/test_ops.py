@@ -17,6 +17,7 @@ from croc.ops import (
     init_tree,
     move_file,
     rename_id,
+    scan_path_refs,
 )
 
 
@@ -519,6 +520,372 @@ class TestProposeId:
             _propose_id(tmp_path / "My Dir (v2)/self.md", tmp_path)
             == "my-dir-v2"
         )
+
+
+class TestAdoptMigrateRefs:
+    """--migrate-refs rewrites markdown path-refs to the croc dialect."""
+
+    def test_simple_path_ref_migrated(self, tmp_path):
+        """[foo](foo.md) → [[id:foo|foo]] + frontmatter link added."""
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text(
+            "# Src\n\nLink: [target](target.md).\n"
+        )
+        adopt_tree(tmp_path, migrate_refs=True)
+        src_content = (tmp_path / "src.md").read_text()
+        assert "[[id:target|target]]" in src_content
+        assert "(target.md)" not in src_content
+        fm, _ = parse_frontmatter(tmp_path / "src.md", src_content)
+        assert any(l.get("to") == "target" for l in fm["links"])
+        # Tree is sound
+        assert check(load_tree(tmp_path)) == []
+
+    def test_relative_path_migrated(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "sub/src.md").write_text(
+            "# Src\n\n[up one](../target.md)\n"
+        )
+        adopt_tree(tmp_path, migrate_refs=True)
+        content = (tmp_path / "sub/src.md").read_text()
+        assert "[[id:target|up one]]" in content
+        assert check(load_tree(tmp_path)) == []
+
+    def test_anchor_preserved(self, tmp_path):
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text(
+            "# Src\n\n[Section X](target.md#section-x)\n"
+        )
+        adopt_tree(tmp_path, migrate_refs=True)
+        content = (tmp_path / "src.md").read_text()
+        assert "[[id:target#section-x|Section X]]" in content
+
+    def test_display_text_preserved(self, tmp_path):
+        (tmp_path / "data-glossary.md").write_text("# Data Glossary\n")
+        (tmp_path / "src.md").write_text(
+            "# Src\n\n[Data Glossary](data-glossary.md)\n"
+        )
+        adopt_tree(tmp_path, migrate_refs=True)
+        content = (tmp_path / "src.md").read_text()
+        assert "[[id:data-glossary|Data Glossary]]" in content
+
+    def test_unresolvable_ref_skipped_with_note(self, tmp_path):
+        (tmp_path / "src.md").write_text(
+            "# Src\n\n[ghost](missing-target.md)\n"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        # Original ref is left in place
+        content = (tmp_path / "src.md").read_text()
+        assert "[ghost](missing-target.md)" in content
+        # SKIP-REF note emitted
+        assert any(a.startswith("SKIP-REF") for a in actions)
+        # Note includes the raw path AND the resolution attempt so
+        # case-sensitivity / symlink issues are diagnosable at a glance.
+        skip_note = next(a for a in actions if a.startswith("SKIP-REF"))
+        assert "missing-target.md" in skip_note
+        assert "tried: missing-target.md" in skip_note
+
+    def test_unresolvable_nested_ref_shows_resolved_tree_path(self, tmp_path):
+        """A ref to `../sibling/foo.md` from a subdir should report the
+        tree-relative resolved location, not just the raw path."""
+        (tmp_path / "one").mkdir()
+        (tmp_path / "two").mkdir()
+        (tmp_path / "one/src.md").write_text("[sibling](../two/missing.md)")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        skip_note = next(a for a in actions if a.startswith("SKIP-REF"))
+        # Raw path preserved for the author's reference
+        assert "'../two/missing.md'" in skip_note
+        # Resolved tree-relative path for the debugger
+        assert "tried: two/missing.md" in skip_note
+
+    def test_non_lowercase_extension_is_detected_and_reported(self, tmp_path):
+        """`.MD` is the silent-rot failure mode: old detection missed it
+        entirely. New detection catches it and flags the case mismatch."""
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[x](target.MD)")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        # Body unchanged; ref was not migrated
+        assert "[x](target.MD)" in (tmp_path / "src.md").read_text()
+        # But it IS surfaced as a SKIP-REF with a case-specific message
+        skip = next(a for a in actions if a.startswith("SKIP-REF") and "target.MD" in a)
+        assert "non-lowercase" in skip
+        assert ".md" in skip.lower()
+
+    def test_case_mismatch_hints_at_matching_lowercase_target(self, tmp_path):
+        """When a lowercase-extension file exists, the SKIP-REF should
+        suggest it directly — minimizes time to fix."""
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[x](target.MD)")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        skip = next(a for a in actions if a.startswith("SKIP-REF"))
+        assert "did you mean 'target.md'" in skip
+
+    def test_case_mismatch_with_no_matching_target_has_no_hint(self, tmp_path):
+        """No matching `.md` file → plain case-mismatch message, no hint."""
+        (tmp_path / "src.md").write_text("[x](phantom.MD)")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        skip = next(a for a in actions if a.startswith("SKIP-REF"))
+        assert "non-lowercase" in skip
+        assert "did you mean" not in skip
+
+    def test_all_three_case_variants_detected(self, tmp_path):
+        """`.MD`, `.Md`, and `.mD` all produce case-mismatch reports."""
+        (tmp_path / "src.md").write_text(
+            "[a](one.MD) [b](two.Md) [c](three.mD)"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        skips = [a for a in actions if a.startswith("SKIP-REF")]
+        assert len(skips) == 3
+        for variant in ("one.MD", "two.Md", "three.mD"):
+            assert any(variant in s for s in skips)
+
+    def test_lowercase_md_unaffected(self, tmp_path):
+        """Regression guard: lowercase `.md` still resolves normally."""
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[x](target.md)")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        assert not any(a.startswith("SKIP-REF") for a in actions)
+        assert "[[id:target|x]]" in (tmp_path / "src.md").read_text()
+
+    def test_ref_escaping_tree_root_is_unresolvable(self, tmp_path):
+        (tmp_path / "inner").mkdir()
+        (tmp_path / "inner/src.md").write_text(
+            "# Src\n\n[outside](../../outside.md)\n"
+        )
+        actions = adopt_tree(tmp_path / "inner", migrate_refs=True)
+        skip_note = next(a for a in actions if a.startswith("SKIP-REF"))
+        # Escape message uses the absolute resolved path so author can see
+        # where the ref actually pointed.
+        assert "escapes tree root" in skip_note
+        assert "resolved to:" in skip_note
+        # Content unchanged for that ref
+        assert "../../outside.md" in (tmp_path / "inner/src.md").read_text()
+
+    def test_refs_require_adopt(self, tmp_path):
+        """Tree with pre-existing croc refs but missing frontmatter is
+        adopted and the refs become declared strong links (Rule 5)."""
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text(
+            "# Src\n\n[target](target.md)\n"
+        )
+        adopt_tree(tmp_path, migrate_refs=True)
+        # Both files have frontmatter now and src declares the link
+        fm_src, _ = parse_frontmatter(
+            tmp_path / "src.md", (tmp_path / "src.md").read_text()
+        )
+        assert any(
+            l.get("to") == "target" and l.get("strength") == "strong"
+            for l in fm_src["links"]
+        )
+
+    def test_multiple_refs_to_same_target_only_one_link_entry(self, tmp_path):
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text(
+            "# Src\n\n[a](target.md) and again [b](target.md#s).\n"
+        )
+        adopt_tree(tmp_path, migrate_refs=True)
+        fm, _ = parse_frontmatter(
+            tmp_path / "src.md", (tmp_path / "src.md").read_text()
+        )
+        matching = [l for l in fm["links"] if l.get("to") == "target"]
+        assert len(matching) == 1
+
+    def test_without_flag_path_refs_remain(self, tmp_path):
+        """Default adopt leaves body refs alone; only frontmatter is migrated."""
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\n[t](target.md)\n")
+        adopt_tree(tmp_path)  # no migrate_refs
+        content = (tmp_path / "src.md").read_text()
+        assert "[t](target.md)" in content
+        assert "[[id:" not in content
+
+    def test_dry_run_with_migrate_refs_writes_nothing(self, tmp_path):
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\n[t](target.md)\n")
+        before = _tree_fingerprint(tmp_path)
+        adopt_tree(tmp_path, migrate_refs=True, dry_run=True)
+        assert _tree_fingerprint(tmp_path) == before
+
+    def test_brownfield_with_refs_end_to_end(self, tmp_path):
+        """Foreign-frontmatter self.md + path-linked leaves → all sound."""
+        (tmp_path / "alerts").mkdir()
+        (tmp_path / "alerts/self.md").write_text(
+            "---\ntype: directory-index\n---\n\n"
+            "# Alerts\n\n"
+            "See [fire runbook](fire.md) and [glossary](../glossary.md).\n"
+        )
+        (tmp_path / "alerts/fire.md").write_text("# Fire\n")
+        (tmp_path / "glossary.md").write_text("# Glossary\n")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        # No unresolved refs
+        assert not any(a.startswith("SKIP-REF") for a in actions)
+        # Content migrated
+        self_text = (tmp_path / "alerts/self.md").read_text()
+        assert "[[id:alerts-fire|fire runbook]]" in self_text
+        assert "[[id:glossary|glossary]]" in self_text
+        # Tree sound
+        assert check(load_tree(tmp_path)) == []
+
+
+class TestAdoptMigrateRefsReporting:
+    """Action log surfaces ref migrations per file so dry-run is auditable."""
+
+    def test_action_line_includes_count_and_source_paths(self, tmp_path):
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[t](target.md)")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        src_action = next(a for a in actions if "src.md" in a)
+        assert "migrated 1 ref" in src_action
+        assert "target.md" in src_action
+
+    def test_augment_and_migrate_collapse_to_one_line(self, tmp_path):
+        """One write per file → one action line. AUGMENT + migration
+        must not render as two separate lines."""
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text(
+            "---\ntype: foo\n---\n\n[t](target.md)\n"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        src_actions = [a for a in actions if "src.md" in a and not a.startswith("SKIP-REF")]
+        assert len(src_actions) == 1
+        assert "AUGMENT" in src_actions[0]
+        assert "migrated 1 ref" in src_actions[0]
+
+    def test_many_refs_are_truncated_with_count(self, tmp_path):
+        for name in ("a", "b", "c", "d", "e"):
+            (tmp_path / f"{name}.md").write_text(f"# {name}")
+        (tmp_path / "src.md").write_text(
+            "[a](a.md) [b](b.md) [c](c.md) [d](d.md) [e](e.md)"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        src_action = next(a for a in actions if "src.md" in a and "migrated" in a)
+        assert "migrated 5 refs" in src_action
+        assert "+2 more" in src_action
+        # First 3 should appear; the last 2 shouldn't be enumerated
+        assert "a.md" in src_action
+        assert "c.md" in src_action
+
+    def test_duplicate_refs_to_same_target_counted_once(self, tmp_path):
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text(
+            "[one](target.md) [two](target.md) [three](target.md)"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        src_action = next(a for a in actions if "src.md" in a and "migrated" in a)
+        assert "migrated 1 ref" in src_action
+
+    def test_non_migrating_entry_has_no_migrated_clause(self, tmp_path):
+        """A plain file with no body refs → no "migrated N refs" in its line."""
+        (tmp_path / "plain.md").write_text("# Just body, no links")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        plain_action = next(a for a in actions if "plain.md" in a)
+        assert "migrated" not in plain_action
+
+    def test_mixed_resolved_and_unresolved_refs(self, tmp_path):
+        """Follow-up: file with one resolvable and one unresolvable ref.
+
+        Exercises SKIP-REF path alongside successful migration so both
+        code paths run in the same plan entry.
+        """
+        (tmp_path / "good.md").write_text("# good")
+        (tmp_path / "src.md").write_text(
+            "[good](good.md) and [bad](ghost.md)"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        # One migration in the SCAFFOLD action line
+        src_actions = [a for a in actions if "src.md" in a and not a.startswith("SKIP-REF")]
+        assert len(src_actions) == 1
+        assert "migrated 1 ref" in src_actions[0]
+        # Plus one SKIP-REF for the unresolvable one
+        skips = [a for a in actions if a.startswith("SKIP-REF")]
+        assert len(skips) == 1
+        assert "ghost.md" in skips[0]
+        # And the unresolvable ref is left as-is in the body
+        assert "[bad](ghost.md)" in (tmp_path / "src.md").read_text()
+        # And the resolvable one was rewritten
+        assert "[[id:good|good]]" in (tmp_path / "src.md").read_text()
+
+    def test_dry_run_reports_migrations(self, tmp_path):
+        """Dry-run must surface the planned migrations or it fails its purpose."""
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[t](target.md)")
+        before = _tree_fingerprint(tmp_path)
+        actions = adopt_tree(tmp_path, migrate_refs=True, dry_run=True)
+        # Nothing was written
+        assert _tree_fingerprint(tmp_path) == before
+        # But the plan still reports the migration
+        src_action = next(a for a in actions if "src.md" in a)
+        assert "migrated 1 ref" in src_action
+
+
+class TestScanPathRefs:
+    """croc refs diagnostic — walks tree, reports path-refs."""
+
+    def test_empty_tree(self, tmp_path):
+        assert scan_path_refs(tmp_path) == []
+
+    def test_missing_root_errors(self, tmp_path):
+        with pytest.raises(OpError, match="not a directory"):
+            scan_path_refs(tmp_path / "ghost")
+
+    def test_finds_resolved_refs(self, tmp_path):
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[t](target.md)")
+        reports = scan_path_refs(tmp_path)
+        assert len(reports) == 1
+        assert reports[0].resolved
+        assert reports[0].target == "target.md"
+
+    def test_finds_unresolved_refs(self, tmp_path):
+        (tmp_path / "src.md").write_text("[ghost](missing.md)")
+        reports = scan_path_refs(tmp_path)
+        assert len(reports) == 1
+        assert not reports[0].resolved
+        assert reports[0].target is None
+        assert reports[0].raw_path == "missing.md"
+
+    def test_ignores_non_md_paths(self, tmp_path):
+        (tmp_path / "src.md").write_text(
+            "[image](foo.png) and [site](https://example.com)"
+        )
+        assert scan_path_refs(tmp_path) == []
+
+    def test_ignores_croc_dialect_refs(self, tmp_path):
+        (tmp_path / "src.md").write_text("[[id:foo]] and [[see:bar]]")
+        assert scan_path_refs(tmp_path) == []
+
+    def test_pre_adoption_tree_works(self, tmp_path):
+        """scan_path_refs doesn't require croc frontmatter — works on raw md."""
+        (tmp_path / "target.md").write_text("# No frontmatter target\n")
+        (tmp_path / "src.md").write_text("# Also no frontmatter\n\n[t](target.md)\n")
+        reports = scan_path_refs(tmp_path)
+        assert len(reports) == 1
+        assert reports[0].resolved
+
+    def test_non_lowercase_extension_surfaces_as_unresolved_with_note(self, tmp_path):
+        """scan_path_refs must catch `.MD` — otherwise brownfield audit
+        misses silent-rot refs and authors never learn about them."""
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("[x](target.MD)")
+        reports = scan_path_refs(tmp_path)
+        assert len(reports) == 1
+        r = reports[0]
+        assert not r.resolved
+        assert r.note is not None
+        assert "non-lowercase" in r.note
+
+    def test_lowercase_and_uppercase_both_detected_in_same_file(self, tmp_path):
+        """A tree with both conventions should report both refs — neither
+        slips through the detector."""
+        (tmp_path / "good.md").write_text("# g")
+        (tmp_path / "bad.md").write_text("# b")
+        (tmp_path / "src.md").write_text("[g](good.md) [b](bad.MD)")
+        reports = scan_path_refs(tmp_path)
+        assert len(reports) == 2
+        by_raw = {r.raw_path: r for r in reports}
+        assert by_raw["good.md"].resolved
+        assert not by_raw["bad.MD"].resolved
+        assert by_raw["bad.MD"].note and "non-lowercase" in by_raw["bad.MD"].note
 
 
 class TestProposeTitle:

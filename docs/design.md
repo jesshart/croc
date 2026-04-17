@@ -71,7 +71,8 @@ Shipped:
 | `croc index`   | Print the derived id → path index as JSON.                      |
 | `croc move`    | Relocate a file. IDs travel with the file; no refs rewritten.   |
 | `croc rename`  | Rename an id. Every strong and weak reference rewritten atomically, validate-then-commit. |
-| `croc init`    | Create `.croc.toml`. With `--adopt`, scaffold frontmatter into every `.md` that lacks it. |
+| `croc init`    | Create `.croc.toml`. With `--adopt`, scaffold/augment frontmatter. With `--migrate-refs`, also rewrite markdown path refs to the croc dialect. |
+| `croc refs`    | Report markdown-style path refs across the tree and whether they resolve. Read-only. |
 
 Every mutating command (`move`, `rename`, `init --adopt`) accepts
 `--dry-run`, which runs all validation and prints the plan without
@@ -81,7 +82,7 @@ Planned:
 
 | Command        | What it would do                                                |
 | -------------- | --------------------------------------------------------------- |
-| `croc refs`    | Reverse index — "who points at this doc?"                       |
+| `croc backrefs` | Reverse id index — "who points at this doc?"                   |
 | `croc gc`      | Report docs with zero inbound strong links.                     |
 | `croc schema`  | Externalize the frontmatter schema.                             |
 

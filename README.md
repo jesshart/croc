@@ -108,9 +108,37 @@ Proposed ids are **hierarchical** — slugified relative path, not just the file
 
 Collisions (rare path-slug ambiguities, or `foo.md` at root competing with `foo/self.md`) are reported and the command refuses to write.
 
+### `croc refs <root> [--unresolved]`
+
+Walks the tree and reports every markdown-style path ref (`[text](path.md)`), showing whether each target resolves to a file under the root. Read-only; works on any markdown tree whether or not it's been adopted. Use as a health check before `init --adopt --migrate-refs`:
+
+```bash
+croc refs --unresolved path/to/docs/
+# UNRESOLVED runbooks/onboarding.md: -> ghost.md
+# 1 unresolved ref(s) across the tree
+```
+
+Exits 1 when any ref is unresolved. Great for CI on partially-migrated trees.
+
+### `--migrate-refs` (on `init --adopt`)
+
+Rewrites markdown path refs in body text to the croc dialect during adoption:
+
+| Before                                   | After                                               |
+| ---------------------------------------- | --------------------------------------------------- |
+| `[foo](foo.md)`                          | `[[id:foo\|foo]]`                                    |
+| `[Section X](target.md#section-x)`       | `[[id:target#section-x\|Section X]]`                 |
+| `[Data Glossary](../data_glossary.md)`   | `[[id:data-glossary\|Data Glossary]]`                |
+
+Link text and anchors are preserved. Frontmatter `links` gets a strong entry for every migrated target (so Rule 5 — identity — is satisfied post-migration).
+
+**Unresolvable refs** (target doesn't exist, or escapes the tree root) are left in place as raw markdown and surfaced as `SKIP-REF` notes. Brownfield trees always have some rot; adoption reports it rather than refusing to land.
+
+**Why not teach `check` to recognize path refs directly?** Because path refs break on move — which is the exact failure mode croc exists to prevent. The checker's narrow `[[id:X]]` dialect IS the enforcement; loosening it would defeat the purpose.
+
 ### `--dry-run`
 
-Every mutating command (`move`, `rename`, `init --adopt`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
+Every mutating command (`move`, `rename`, `init --adopt`, `init --adopt --migrate-refs`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
 
 ## Concepts
 
@@ -129,9 +157,12 @@ links:
 ---
 
 The body can reference other docs: [[id:design-index]] or [[see:obsidian-comparison]].
+Refs support optional anchors and display text: [[id:design-index#intro|the intro]].
 ```
 
 **Required fields:** `id`, `title`, `kind`, `links`.
+
+**Ref dialect:** `[[id:X]]`, `[[id:X#anchor]]`, `[[id:X|display text]]`, `[[id:X#anchor|display text]]`. Only the id is load-bearing for invariant checking; the anchor and display text are preserved for renderers and consumers.
 
 **Id grammar:** `[A-Za-z0-9_.-]+`. UUIDs, slugs, dotted namespaces all legal. Spaces and slashes aren't.
 

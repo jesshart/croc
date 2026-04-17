@@ -9,7 +9,14 @@ import sys
 import typer
 
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
-from croc.ops import OpError, adopt_tree, init_tree, move_file, rename_id
+from croc.ops import (
+    OpError,
+    adopt_tree,
+    init_tree,
+    move_file,
+    rename_id,
+    scan_path_refs,
+)
 
 app = typer.Typer(
     name="croc",
@@ -115,6 +122,10 @@ def init_cmd(
     adopt: bool = typer.Option(
         False, "--adopt", help="Scaffold frontmatter into every .md that lacks it."
     ),
+    migrate_refs: bool = typer.Option(
+        False, "--migrate-refs",
+        help="During --adopt, rewrite markdown path-refs to the croc [[id:X]] dialect.",
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview actions; do not write."
     ),
@@ -122,6 +133,12 @@ def init_cmd(
     """Initialize a croc tree. Optionally scaffold missing frontmatter."""
     path = path.resolve()
     marker = path / ".croc.toml"
+
+    if migrate_refs and not adopt:
+        typer.echo(
+            "init FAILED: --migrate-refs requires --adopt", err=True
+        )
+        raise typer.Exit(code=2)
 
     if marker.exists() and not adopt:
         typer.echo(
@@ -135,7 +152,9 @@ def init_cmd(
     try:
         actions += init_tree(path, dry_run=dry_run)
         if adopt:
-            actions += adopt_tree(path, dry_run=dry_run)
+            actions += adopt_tree(
+                path, dry_run=dry_run, migrate_refs=migrate_refs
+            )
     except OpError as e:
         typer.echo(f"init FAILED: {e}", err=True)
         raise typer.Exit(code=1)
@@ -150,6 +169,46 @@ def init_cmd(
         typer.echo(f"(dry-run: {n} action{plural}; nothing written)")
     else:
         typer.echo(f"init OK ({n} action{plural})")
+
+
+@app.command("refs")
+def refs_cmd(
+    root: pathlib.Path = typer.Argument(
+        pathlib.Path("."), help="Tree root."
+    ),
+    unresolved_only: bool = typer.Option(
+        False, "--unresolved",
+        help="Report only path-refs that don't resolve to a doc in the tree.",
+    ),
+) -> None:
+    """Report markdown-style path refs in the tree and whether they resolve.
+
+    Works on any markdown tree, including pre-adoption ones. Useful as a
+    health check before `init --adopt --migrate-refs`: anything printed
+    as UNRESOLVED will become a SKIP-REF note during migration.
+    """
+    try:
+        reports = scan_path_refs(root)
+    except OpError as e:
+        typer.echo(f"refs FAILED: {e}", err=True)
+        raise typer.Exit(code=2)
+
+    unresolved_count = 0
+    for r in reports:
+        if unresolved_only and r.resolved:
+            continue
+        status = "OK        " if r.resolved else "UNRESOLVED"
+        target_display = r.target if r.target else r.raw_path
+        note = f" (note: {r.note})" if r.note else ""
+        typer.echo(f"{status} {r.source}: -> {target_display}{note}")
+        if not r.resolved:
+            unresolved_count += 1
+
+    if unresolved_count:
+        typer.echo(
+            f"\n{unresolved_count} unresolved ref(s) across the tree", err=True
+        )
+        raise typer.Exit(code=1)
 
 
 def main() -> None:

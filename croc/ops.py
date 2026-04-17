@@ -25,7 +25,7 @@ import pathlib
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable
 
 import yaml
@@ -35,12 +35,32 @@ from croc.check import (
     DocId,
     DocPath,
     ID_RE,
+    STRONG_REF,
     TreeError,
     build_index,
     check,
     load_tree,
     parse_frontmatter,
 )
+
+
+# Markdown path-ref pattern: matches `[text](relative/path.md[#anchor])`.
+# Used for both migration (`--migrate-refs`) and the `refs` diagnostic.
+# Intentionally narrow — only .md targets; ignores reference-style links,
+# autolinks, images, and links with extra URL syntax (titles, query strings).
+#
+# The extension match is case-insensitive (`.md`, `.MD`, `.Md`, `.mD`) so we
+# catch any case variant at detection. The resolver then rejects non-lowercase
+# variants with a targeted case-sensitivity diagnostic — letting `.MD` pass
+# silently would be the exact failure mode croc exists to prevent.
+MD_PATH_REF = re.compile(
+    r"\[(?P<text>[^\]]*)\]\((?P<path>[^)#\s]+\.[Mm][Dd])(?P<anchor>#[^)]+)?\)"
+)
+
+
+def _case_mismatch_ext(rel_path: str) -> bool:
+    """True iff the path ends with a case variant of `.md` other than `.md`."""
+    return rel_path.endswith((".MD", ".Md", ".mD"))
 
 
 class OpError(Exception):
@@ -191,9 +211,17 @@ class _AdoptEntry:
     proposed_id: str
     verb: str  # "SCAFFOLD" or "AUGMENT (added: ...)"
     is_new_id: bool  # True if the id is newly derived; False if it was already on disk
+    migrated_refs: list[str] = field(default_factory=list)
+    # ^ raw path strings (as written in markdown) of refs migrated during
+    # --migrate-refs. Surfaced in the action log so dry-run plans show
+    # which body refs are about to change.
 
 
-def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
+def adopt_tree(
+    root: pathlib.Path,
+    dry_run: bool = False,
+    migrate_refs: bool = False,
+) -> list[str]:
     """Bring every `.md` under `root` into the managed croc schema.
 
     Three outcomes per file:
@@ -211,6 +239,12 @@ def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
     Fully-managed files (all four required fields present + id valid) are
     left alone. Ids are checked for collision across proposed ids and
     against any ids already on disk; collisions abort with a clear list.
+
+    With `migrate_refs=True`, body text in every SCAFFOLD/AUGMENT entry is
+    walked for markdown-style path refs (`[text](rel/path.md#anchor)`) and
+    rewritten to the croc dialect (`[[id:X#anchor|text]]`). Unresolvable
+    refs are left in place and surfaced as `SKIP-REF` notes; fix the
+    target or add it to the tree, then re-run.
     """
     root = root.resolve()
     if not root.is_dir():
@@ -253,11 +287,15 @@ def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
             + "\n  ".join(collisions)
         )
 
+    # Phase 2.5 (optional): migrate markdown path-refs in plan entries' bodies
+    # to the croc dialect. Must run after collision detection (we need the
+    # full post-adopt path→id map) and before actions are rendered.
+    if migrate_refs:
+        _migrate_refs_in_plan(root, existing_ids, plan, skip_notes)
+
     actions = list(skip_notes)
     for entry in plan:
-        actions.append(
-            f"{entry.verb} {entry.path.relative_to(root)} (id: {entry.proposed_id})"
-        )
+        actions.append(_format_adopt_action(entry, root))
 
     if dry_run:
         return actions
@@ -269,6 +307,252 @@ def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
         _atomic_write(entry.path, entry.new_content)
 
     return actions
+
+
+def _format_adopt_action(entry: _AdoptEntry, root: pathlib.Path) -> str:
+    """Render one entry's action line for the CLI action log.
+
+    Combines verb + path + id and, if any refs migrated, appends a count
+    and up to the first three source paths with `+N more` truncation.
+    One line per entry reflects one write per file — readers can trust
+    the line count as the write count.
+    """
+    parts: list[str] = [f"id: {entry.proposed_id}"]
+    if entry.migrated_refs:
+        seen: list[str] = []
+        for r in entry.migrated_refs:
+            if r not in seen:
+                seen.append(r)
+        n = len(seen)
+        plural = "" if n == 1 else "s"
+        shown = seen[:3]
+        suffix = ", ".join(shown)
+        if n > 3:
+            suffix += f", +{n - 3} more"
+        parts.append(f"migrated {n} ref{plural}: {suffix}")
+    return (
+        f"{entry.verb} {entry.path.relative_to(root)} ({'; '.join(parts)})"
+    )
+
+
+def _migrate_refs_in_plan(
+    root: pathlib.Path,
+    existing_ids: dict[str, pathlib.Path],
+    plan: list[_AdoptEntry],
+    skip_notes: list[str],
+) -> None:
+    """Rewrite markdown path-refs in each plan entry's body to croc dialect.
+
+    Mutates `plan` entries in-place (updating `new_content` and the
+    `migrated_refs` record) and appends `SKIP-REF` notes for any
+    unresolvable refs.
+    """
+    # Build the complete post-adopt path → id map. Managed files contribute
+    # their existing id; plan entries contribute their proposed id. Keys
+    # are resolved absolute paths so relative-path resolution from any
+    # source file lands on a canonical key.
+    path_to_id: dict[pathlib.Path, str] = {}
+    for id_, p in existing_ids.items():
+        path_to_id[p.resolve()] = id_
+    for entry in plan:
+        path_to_id[entry.path.resolve()] = entry.proposed_id
+
+    for entry in plan:
+        parts = entry.new_content.split("---\n", 2)
+        if len(parts) < 3:
+            continue  # shouldn't happen for plan entries we construct
+        _, fm_text, body = parts
+
+        new_body, unresolved, migrated = _migrate_refs_in_body(
+            body, entry.path, root, path_to_id
+        )
+        entry.migrated_refs.extend(migrated)
+
+        for note in unresolved:
+            skip_notes.append(f"SKIP-REF {note}")
+
+        # After migration, make sure every strong body ref is declared in
+        # frontmatter `links` (Rule 5 — identity). This is correct for
+        # both refs we migrated AND any pre-existing `[[id:X]]` refs in
+        # the body, so scaffolds with hand-written croc refs also work.
+        fm = yaml.safe_load(fm_text) or {}
+        body_strong_ids = {
+            m.group(1) for m in STRONG_REF.finditer(new_body)
+        }
+        declared = {
+            link["to"]
+            for link in fm.get("links", [])
+            if isinstance(link, dict) and "to" in link
+        }
+        missing = body_strong_ids - declared
+
+        body_changed = new_body != body
+        links_changed = bool(missing)
+
+        if not (body_changed or links_changed):
+            continue
+
+        if links_changed:
+            new_links = list(fm.get("links", []))
+            for mid in sorted(missing):
+                new_links.append({"to": mid, "strength": "strong"})
+            fm["links"] = new_links
+
+        fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
+        entry.new_content = f"---\n{fm_yaml}---\n{new_body}"
+
+
+def _migrate_refs_in_body(
+    body: str,
+    source_abs_path: pathlib.Path,
+    root: pathlib.Path,
+    path_to_id: dict[pathlib.Path, str],
+) -> tuple[str, list[str], list[str]]:
+    """Rewrite markdown path-refs in `body`.
+
+    Returns `(new_body, unresolved_notes, migrated_paths)`.
+    `migrated_paths` is the raw path strings (as they appeared in the
+    markdown source) that were successfully rewritten — usable for
+    audit logs and diff-style reporting.
+    """
+    unresolved: list[str] = []
+    migrated: list[str] = []
+    source_rel = source_abs_path.relative_to(root)
+
+    def replace(m: re.Match) -> str:
+        text = m.group("text").strip()
+        rel_path = m.group("path")
+        anchor = m.group("anchor") or ""
+
+        # Phase 0: case-sensitivity. croc only recognizes `.md`; any other
+        # casing is silently-rotting-link territory, so reject with a
+        # targeted message — and offer the normalized variant as a "did you
+        # mean" hint when the lowercase target exists on disk.
+        if _case_mismatch_ext(rel_path):
+            normalized = rel_path[:-3] + ".md"
+            hint = ""
+            try:
+                normalized_abs = (source_abs_path.parent / normalized).resolve()
+                if normalized_abs in path_to_id:
+                    hint = f"; did you mean {normalized!r}?"
+            except OSError:
+                pass
+            unresolved.append(
+                f"{source_rel}: path ref {rel_path!r} uses non-lowercase "
+                f"`.md` extension (croc recognizes `.md` only){hint}"
+            )
+            return m.group(0)
+
+        # Phase 1: resolve to an absolute, normalized path. resolve() with
+        # default strict=False doesn't require the target to exist — it
+        # just canonicalizes. OSError is rare (e.g. permission denied
+        # traversing a parent).
+        try:
+            target_abs = (source_abs_path.parent / rel_path).resolve()
+        except OSError as e:
+            unresolved.append(
+                f"{source_rel}: path ref {rel_path!r} could not be resolved "
+                f"({e})"
+            )
+            return m.group(0)
+
+        # Phase 2: must land under the tree root. If not, surface the
+        # resolved absolute path so the author can see where it landed.
+        try:
+            target_rel = target_abs.relative_to(root)
+        except ValueError:
+            unresolved.append(
+                f"{source_rel}: path ref {rel_path!r} escapes tree root "
+                f"(resolved to: {target_abs})"
+            )
+            return m.group(0)
+
+        # Phase 3: path is valid and under root, but no managed doc lives
+        # there. Surface the tree-relative resolved path so case /
+        # symlink / missing-file issues are diagnosable at a glance.
+        if target_abs not in path_to_id:
+            unresolved.append(
+                f"{source_rel}: path ref {rel_path!r} does not resolve to "
+                f"any doc in the tree (tried: {target_rel})"
+            )
+            return m.group(0)
+
+        target_id = path_to_id[target_abs]
+        migrated.append(rel_path)
+        rewrite = f"[[id:{target_id}"
+        if anchor:
+            rewrite += anchor  # keeps leading `#`
+        if text:
+            rewrite += f"|{text}"
+        rewrite += "]]"
+        return rewrite
+
+    return MD_PATH_REF.sub(replace, body), unresolved, migrated
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic: find markdown path-refs in the tree
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PathRefReport:
+    source: DocPath       # source file, relative to root
+    raw_path: str         # path as written in the markdown link
+    target: DocPath | None  # resolved target, relative to root (None if unresolved)
+    resolved: bool        # whether the target exists as a file under root
+    note: str | None = None  # reason for unresolved status, if explanatory
+
+
+def scan_path_refs(root: pathlib.Path) -> list[PathRefReport]:
+    """Walk the tree and report every markdown path-ref.
+
+    Works on any markdown tree — no croc frontmatter required. Useful as
+    a health check before `init --adopt --migrate-refs` to see how many
+    refs would migrate cleanly vs. end up as `SKIP-REF` notes.
+    """
+    root = root.resolve()
+    if not root.is_dir():
+        raise OpError(f"{root}: not a directory")
+
+    reports: list[PathRefReport] = []
+    for p in sorted(root.rglob("*.md")):
+        source_rel = DocPath(str(p.relative_to(root)))
+        try:
+            text = p.read_text()
+        except OSError:
+            continue
+        for m in MD_PATH_REF.finditer(text):
+            raw = m.group("path")
+            target_rel: DocPath | None = None
+            resolved = False
+            note: str | None = None
+
+            if _case_mismatch_ext(raw):
+                note = (
+                    "non-lowercase `.md` extension "
+                    "(croc recognizes `.md` only)"
+                )
+            else:
+                try:
+                    target_abs = (p.parent / raw).resolve()
+                    target_abs.relative_to(root)
+                    if target_abs.exists() and target_abs.is_file():
+                        target_rel = DocPath(str(target_abs.relative_to(root)))
+                        resolved = True
+                except (OSError, ValueError):
+                    pass
+
+            reports.append(
+                PathRefReport(
+                    source=source_rel,
+                    raw_path=raw,
+                    target=target_rel,
+                    resolved=resolved,
+                    note=note,
+                )
+            )
+    return reports
 
 
 def _classify_for_adopt(
