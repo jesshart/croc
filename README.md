@@ -120,9 +120,9 @@ croc refs --unresolved path/to/docs/
 
 Exits 1 when any ref is unresolved. Great for CI on partially-migrated trees.
 
-### `--migrate-refs` (on `init --adopt`)
+### Ref migration (on `init --adopt`, default on)
 
-Rewrites markdown path refs in body text to the croc dialect during adoption:
+Adoption rewrites markdown path refs in body text to the croc dialect by default:
 
 | Before                                   | After                                               |
 | ---------------------------------------- | --------------------------------------------------- |
@@ -132,7 +132,11 @@ Rewrites markdown path refs in body text to the croc dialect during adoption:
 
 Link text and anchors are preserved. Frontmatter `links` gets a strong entry for every migrated target (so Rule 5 — identity — is satisfied post-migration).
 
-**Unresolvable refs** (target doesn't exist, or escapes the tree root) are left in place as raw markdown and surfaced as `SKIP-REF` notes. Brownfield trees always have some rot; adoption reports it rather than refusing to land.
+**Pass `--no-migrate-refs`** to adopt only the frontmatter shape and leave body content untouched — useful if you want to stage the migration separately.
+
+**Re-running on an adopted tree is safe.** If a previously-adopted file grows new path-refs later (someone pastes a markdown link, a new doc lands), the next `init --adopt` reaches that file and migrates the new refs. Clean trees produce zero actions — the command is idempotent.
+
+**Unresolvable refs** (target doesn't exist, or escapes the tree root, or uses non-lowercase `.md` extension) are left in place as raw markdown and surfaced as `SKIP-REF` notes. Brownfield trees always have some rot; adoption reports it rather than refusing to land.
 
 **Why not teach `check` to recognize path refs directly?** Because path refs break on move — which is the exact failure mode croc exists to prevent. The checker's narrow `[[id:X]]` dialect IS the enforcement; loosening it would defeat the purpose.
 

@@ -220,7 +220,7 @@ class _AdoptEntry:
 def adopt_tree(
     root: pathlib.Path,
     dry_run: bool = False,
-    migrate_refs: bool = False,
+    migrate_refs: bool = True,
 ) -> list[str]:
     """Bring every `.md` under `root` into the managed croc schema.
 
@@ -240,11 +240,17 @@ def adopt_tree(
     left alone. Ids are checked for collision across proposed ids and
     against any ids already on disk; collisions abort with a clear list.
 
-    With `migrate_refs=True`, body text in every SCAFFOLD/AUGMENT entry is
-    walked for markdown-style path refs (`[text](rel/path.md#anchor)`) and
-    rewritten to the croc dialect (`[[id:X#anchor|text]]`). Unresolvable
-    refs are left in place and surfaced as `SKIP-REF` notes; fix the
-    target or add it to the tree, then re-run.
+    With `migrate_refs=True` (the default), body text in every plan
+    entry — including already-managed files that happen to contain
+    path-refs — is walked for markdown-style refs (`[text](rel/path.md)`)
+    and rewritten to the croc dialect (`[[id:X#anchor|text]]`). Managed
+    files with no path-refs stay out of the plan entirely; re-running
+    adopt is cheap and idempotent. Unresolvable refs are left in place
+    and surfaced as `SKIP-REF` notes; fix the target or add it to the
+    tree, then re-run.
+
+    Pass `migrate_refs=False` to adopt only frontmatter shape and leave
+    body content untouched.
     """
     root = root.resolve()
     if not root.is_dir():
@@ -256,7 +262,9 @@ def adopt_tree(
     skip_notes: list[str] = []
 
     for p in sorted(root.rglob("*.md")):
-        entry = _classify_for_adopt(p, root, existing_ids, skip_notes)
+        entry = _classify_for_adopt(
+            p, root, existing_ids, skip_notes, migrate_refs=migrate_refs
+        )
         if entry is not None:
             plan.append(entry)
 
@@ -292,6 +300,13 @@ def adopt_tree(
     # full post-adopt path→id map) and before actions are rendered.
     if migrate_refs:
         _migrate_refs_in_plan(root, existing_ids, plan, skip_notes)
+        # Prune MIGRATE entries that turned out to have nothing to migrate
+        # (e.g. managed file whose only path-refs were unresolvable — the
+        # SKIP-REF notes already carry that information; no write needed).
+        plan = [
+            e for e in plan
+            if e.verb != "MIGRATE" or e.migrated_refs
+        ]
 
     actions = list(skip_notes)
     for entry in plan:
@@ -560,11 +575,18 @@ def _classify_for_adopt(
     root: pathlib.Path,
     existing_ids: dict[str, pathlib.Path],
     skip_notes: list[str],
+    migrate_refs: bool = True,
 ) -> _AdoptEntry | None:
     """Classify one .md file. Mutates `existing_ids` and `skip_notes`.
 
-    Returns an `_AdoptEntry` if the file needs writing (SCAFFOLD or AUGMENT),
-    or None if the file is already managed or is being skipped.
+    Returns an `_AdoptEntry` if the file needs writing (SCAFFOLD, AUGMENT,
+    or MIGRATE-only), or None if the file is already fully managed AND has
+    no body path-refs to migrate (or is being skipped).
+
+    MIGRATE-only entries are created for already-managed files that happen
+    to contain markdown path-refs — fixing the "re-running adopt can't
+    reach managed files" gap. Their `new_content` is the original raw text;
+    the migration phase rewrites it if any refs resolve.
     """
     raw = p.read_text()
 
@@ -619,10 +641,21 @@ def _classify_for_adopt(
         )
         return None
 
-    # --- Case B: already fully managed → no write ---
+    # --- Case B: already fully managed ---
     required = ("id", "title", "kind", "links")
     if all(f in fm for f in required):
         existing_ids[fm["id"]] = p
+        # If the body still has markdown path-refs, we need to migrate them
+        # on this run — otherwise re-running `init --adopt` on a previously
+        # adopted tree can't reach the files that need dialect fixes.
+        if migrate_refs and MD_PATH_REF.search(body):
+            return _AdoptEntry(
+                path=p,
+                new_content=raw,
+                proposed_id=fm["id"],
+                verb="MIGRATE",
+                is_new_id=False,
+            )
         return None
 
     # --- Case C: has frontmatter but is missing required fields → AUGMENT ---

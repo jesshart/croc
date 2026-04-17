@@ -123,8 +123,12 @@ def init_cmd(
         False, "--adopt", help="Scaffold frontmatter into every .md that lacks it."
     ),
     migrate_refs: bool = typer.Option(
-        False, "--migrate-refs",
-        help="During --adopt, rewrite markdown path-refs to the croc [[id:X]] dialect.",
+        True, "--migrate-refs/--no-migrate-refs",
+        help=(
+            "During --adopt, rewrite markdown path-refs to the croc "
+            "[[id:X]] dialect. On by default; pass --no-migrate-refs to "
+            "adopt only frontmatter shape and leave body content alone."
+        ),
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Preview actions; do not write."
@@ -133,12 +137,6 @@ def init_cmd(
     """Initialize a croc tree. Optionally scaffold missing frontmatter."""
     path = path.resolve()
     marker = path / ".croc.toml"
-
-    if migrate_refs and not adopt:
-        typer.echo(
-            "init FAILED: --migrate-refs requires --adopt", err=True
-        )
-        raise typer.Exit(code=2)
 
     if marker.exists() and not adopt:
         typer.echo(

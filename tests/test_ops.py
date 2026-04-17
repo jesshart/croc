@@ -690,14 +690,25 @@ class TestAdoptMigrateRefs:
         matching = [l for l in fm["links"] if l.get("to") == "target"]
         assert len(matching) == 1
 
-    def test_without_flag_path_refs_remain(self, tmp_path):
-        """Default adopt leaves body refs alone; only frontmatter is migrated."""
+    def test_default_adopt_migrates_refs(self, tmp_path):
+        """Bare adopt (no flag) migrates body refs — the default-on policy."""
         (tmp_path / "target.md").write_text("# Target\n")
         (tmp_path / "src.md").write_text("# Src\n\n[t](target.md)\n")
-        adopt_tree(tmp_path)  # no migrate_refs
+        adopt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "[t](target.md)" not in content
+        assert "[[id:target|t]]" in content
+
+    def test_no_migrate_refs_flag_preserves_path_refs(self, tmp_path):
+        """Explicit opt-out: frontmatter adopted but body untouched."""
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\n[t](target.md)\n")
+        adopt_tree(tmp_path, migrate_refs=False)
         content = (tmp_path / "src.md").read_text()
         assert "[t](target.md)" in content
         assert "[[id:" not in content
+        # But frontmatter is still scaffolded
+        assert content.startswith("---\nid: src")
 
     def test_dry_run_with_migrate_refs_writes_nothing(self, tmp_path):
         (tmp_path / "target.md").write_text("# Target\n")
@@ -705,6 +716,52 @@ class TestAdoptMigrateRefs:
         before = _tree_fingerprint(tmp_path)
         adopt_tree(tmp_path, migrate_refs=True, dry_run=True)
         assert _tree_fingerprint(tmp_path) == before
+
+    def test_rerun_adopt_migrates_refs_in_already_managed_files(self, tmp_path):
+        """The re-run gap: after a first adoption, newly-introduced path-refs
+        in managed files must still be reachable on the next adopt."""
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src (no refs initially)\n")
+        adopt_tree(tmp_path)  # first adoption — both files get frontmatter
+        # Now simulate the user pasting a path-ref into the managed file
+        existing = (tmp_path / "src.md").read_text()
+        (tmp_path / "src.md").write_text(
+            existing + "\n[late ref](target.md)\n"
+        )
+        # Second adopt must reach the managed file and migrate the ref
+        actions = adopt_tree(tmp_path)
+        src_actions = [a for a in actions if "src.md" in a and "MIGRATE" in a]
+        assert len(src_actions) == 1
+        content = (tmp_path / "src.md").read_text()
+        assert "[late ref](target.md)" not in content
+        assert "[[id:target|late ref]]" in content
+        assert check(load_tree(tmp_path)) == []
+
+    def test_rerun_adopt_is_noop_on_clean_tree(self, tmp_path):
+        """Idempotency: a second run on a tree with no rot produces 0 actions."""
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\n[t](target.md)\n")
+        first = adopt_tree(tmp_path)
+        assert any("SCAFFOLD" in a for a in first)
+        second = adopt_tree(tmp_path)
+        assert second == []  # nothing to do
+
+    def test_rerun_with_only_unresolvable_new_refs_does_not_write(self, tmp_path):
+        """Managed file grows a ref to a nonexistent target — the MIGRATE
+        entry is pruned (nothing to migrate), only a SKIP-REF is emitted."""
+        (tmp_path / "src.md").write_text("# Src\n")
+        adopt_tree(tmp_path)
+        before = (tmp_path / "src.md").read_text()
+        existing = before
+        (tmp_path / "src.md").write_text(existing + "\n[ghost](nope.md)\n")
+        pre_rerun = _tree_fingerprint(tmp_path)
+        actions = adopt_tree(tmp_path)
+        # SKIP-REF emitted
+        assert any(a.startswith("SKIP-REF") and "nope.md" in a for a in actions)
+        # No MIGRATE action in the log (nothing was actually migrated)
+        assert not any("MIGRATE" in a and "src.md" in a for a in actions)
+        # And the file wasn't rewritten
+        assert _tree_fingerprint(tmp_path) == pre_rerun
 
     def test_brownfield_with_refs_end_to_end(self, tmp_path):
         """Foreign-frontmatter self.md + path-linked leaves → all sound."""
