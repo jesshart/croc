@@ -141,6 +141,54 @@ class TestRules:
         assert any("E-IDENTITY" in e for e in errors)
 
 
+class TestExtendedRefDialect:
+    """STRONG_REF/WEAK_REF accept #anchor and |display; id is still group 1."""
+
+    def test_bare_id_still_works(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="see [[id:target]]",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_id_with_anchor(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="see [[id:target#section]]",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_id_with_display_text(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="see [[id:target|The Target]]",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_id_with_anchor_and_display(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="see [[id:target#section|The Section]]",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_dangling_still_detected_with_richer_syntax(self, tmp_path, write_doc):
+        write_doc(
+            tmp_path, "src.md", "src",
+            body="see [[id:ghost#section|Ghost]]",
+        )
+        errors = check(load_tree(tmp_path))
+        assert any("E-DANGLING" in e and "ghost" in e for e in errors)
+
+
 class TestSymlinks:
     def test_symlinked_dir_produces_warning(self, tmp_path):
         external = tmp_path / "external"

@@ -36,8 +36,20 @@ DocPath = NewType("DocPath", str)
 # frontmatter can silently fail to match its own references.
 ID_CHARS = r"[A-Za-z0-9_.-]+"
 ID_RE = re.compile(rf"^{ID_CHARS}$")
-STRONG_REF = re.compile(rf"\[\[id:({ID_CHARS})\]\]")
-WEAK_REF = re.compile(rf"\[\[see:({ID_CHARS})\]\]")
+
+# Body-reference dialect. Supports:
+#   [[id:X]]
+#   [[id:X#anchor]]
+#   [[id:X|display text]]
+#   [[id:X#anchor|display text]]
+# Only the id (group 1) is captured; anchor and display are consumed but
+# discarded, so the checker's invariants depend only on the id.
+STRONG_REF = re.compile(
+    rf"\[\[id:({ID_CHARS})(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]"
+)
+WEAK_REF = re.compile(
+    rf"\[\[see:({ID_CHARS})(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]"
+)
 
 
 @dataclass
