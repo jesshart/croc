@@ -6,6 +6,12 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.1.0 — 2026-04-17
+
+Initial public release. Published to PyPI as `croc-cli` (the bare
+`croc` name is taken by an unrelated scientific package). Import
+name and CLI command remain `croc`.
+
 ### Changed (breaking)
 
 - **`init --adopt` migrates markdown path refs by default.** Previously,
