@@ -11,7 +11,6 @@ import yaml
 from croc.check import check, load_tree, parse_frontmatter
 from croc.ops import (
     OpError,
-    _molt_body,
     _molt_frontmatter,
     _propose_id,
     _slugify,
@@ -77,8 +76,7 @@ class TestMove:
     def test_refuses_on_broken_tree(self, sample_tree):
         # Add a dangling strong link to break the tree.
         (sample_tree / "broken.md").write_text(
-            "---\nid: broken\ntitle: t\nkind: leaf\n"
-            "links:\n  - { to: ghost, strength: strong }\n---\n[[id:ghost]]\n"
+            "---\nid: broken\ntitle: t\nkind: leaf\nlinks:\n  - { to: ghost, strength: strong }\n---\n[[id:ghost]]\n"
         )
         with pytest.raises(OpError, match="not sound"):
             move_file(
@@ -141,17 +139,14 @@ class TestRename:
 
     def test_refuses_on_broken_tree(self, sample_tree):
         (sample_tree / "broken.md").write_text(
-            "---\nid: broken\ntitle: t\nkind: leaf\n"
-            "links:\n  - { to: ghost, strength: strong }\n---\n[[id:ghost]]\n"
+            "---\nid: broken\ntitle: t\nkind: leaf\nlinks:\n  - { to: ghost, strength: strong }\n---\n[[id:ghost]]\n"
         )
         with pytest.raises(OpError, match="not sound"):
             rename_id(sample_tree, "registry", "registry-pattern")
 
     def test_dry_run_writes_nothing_and_reports_plan(self, sample_tree):
         before = _tree_fingerprint(sample_tree)
-        changed = rename_id(
-            sample_tree, "registry", "registry-pattern", dry_run=True
-        )
+        changed = rename_id(sample_tree, "registry", "registry-pattern", dry_run=True)
         assert set(changed) == {
             "design/self.md",
             "notes/obsidian.md",
@@ -216,8 +211,7 @@ class TestAdopt:
             assert fm["kind"] == "leaf"
             assert fm["links"] == []
         # Slugified ids
-        ids = {parse_frontmatter(p, p.read_text())[0]["id"]
-               for p in tmp_path.rglob("*.md")}
+        ids = {parse_frontmatter(p, p.read_text())[0]["id"] for p in tmp_path.rglob("*.md")}
         assert ids == {"some-runbook", "readme"}
 
     def test_preserves_body_content(self, tmp_path):
@@ -316,14 +310,10 @@ class TestAdopt:
 class TestAdoptBrownfield:
     def test_augments_frontmatter_missing_only_id(self, tmp_path):
         """File has foreign frontmatter but no `id` — adopt fills the gap."""
-        (tmp_path / "doc.md").write_text(
-            "---\ntype: foo\nauthor: jane\n---\n# body\n"
-        )
+        (tmp_path / "doc.md").write_text("---\ntype: foo\nauthor: jane\n---\n# body\n")
         actions = adopt_tree(tmp_path)
         assert any(a.startswith("AUGMENT") and "doc.md" in a for a in actions)
-        fm, _ = parse_frontmatter(
-            tmp_path / "doc.md", (tmp_path / "doc.md").read_text()
-        )
+        fm, _ = parse_frontmatter(tmp_path / "doc.md", (tmp_path / "doc.md").read_text())
         assert fm["id"] == "doc"
         # Foreign fields preserved
         assert fm["type"] == "foo"
@@ -388,17 +378,13 @@ class TestAdoptBrownfield:
         deep.mkdir(parents=True)
         (deep / "self.md").write_text("# Index\n")
         adopt_tree(tmp_path)
-        fm, _ = parse_frontmatter(
-            deep / "self.md", (deep / "self.md").read_text()
-        )
+        fm, _ = parse_frontmatter(deep / "self.md", (deep / "self.md").read_text())
         assert fm["id"] == "core-validations-service-a"
 
     def test_root_self_md_gets_root_id(self, tmp_path):
         (tmp_path / "self.md").write_text("# Root\n")
         adopt_tree(tmp_path)
-        fm, _ = parse_frontmatter(
-            tmp_path / "self.md", (tmp_path / "self.md").read_text()
-        )
+        fm, _ = parse_frontmatter(tmp_path / "self.md", (tmp_path / "self.md").read_text())
         assert fm["id"] == "root"
 
     def test_malformed_existing_id_is_skipped(self, tmp_path):
@@ -430,12 +416,8 @@ class TestAdoptBrownfield:
         (tmp_path / "runbooks").mkdir()
         (tmp_path / "core/service-a").mkdir(parents=True)
         # Two self.md files with foreign (non-croc) frontmatter
-        (tmp_path / "alerts/self.md").write_text(
-            "---\ntype: directory-index\nmirrors:\n  - x\n---\n\n# Alerts\n"
-        )
-        (tmp_path / "runbooks/self.md").write_text(
-            "---\ntype: directory-index\n---\n\n# Runbooks\n"
-        )
+        (tmp_path / "alerts/self.md").write_text("---\ntype: directory-index\nmirrors:\n  - x\n---\n\n# Alerts\n")
+        (tmp_path / "runbooks/self.md").write_text("---\ntype: directory-index\n---\n\n# Runbooks\n")
         # Deep self.md at a nested path
         (tmp_path / "core/service-a/self.md").write_text("# Service A\n")
         # Plain markdown leaves
@@ -477,10 +459,7 @@ class TestProposeId:
     def test_nested_file_uses_full_relative_path(self, tmp_path):
         (tmp_path / "alerts").mkdir()
         (tmp_path / "alerts/fire-alert.md").write_text("")
-        assert (
-            _propose_id(tmp_path / "alerts/fire-alert.md", tmp_path)
-            == "alerts-fire-alert"
-        )
+        assert _propose_id(tmp_path / "alerts/fire-alert.md", tmp_path) == "alerts-fire-alert"
 
     def test_python_init_mirror_files_are_path_unique(self, tmp_path):
         """`__init__.md` mirrored from `__init__.py` across a package tree.
@@ -492,10 +471,7 @@ class TestProposeId:
         for d in ("pkg/utils", "pkg/submod/alpha", "pkg/submod/beta"):
             (tmp_path / d).mkdir(parents=True)
             (tmp_path / d / "__init__.md").write_text("")
-        ids = {
-            _propose_id(p, tmp_path)
-            for p in tmp_path.rglob("__init__.md")
-        }
+        ids = {_propose_id(p, tmp_path) for p in tmp_path.rglob("__init__.md")}
         assert ids == {
             "pkg-utils-init",
             "pkg-submod-alpha-init",
@@ -507,10 +483,7 @@ class TestProposeId:
         for region in ("east", "west", "central"):
             (tmp_path / "regions" / region).mkdir(parents=True)
             (tmp_path / "regions" / region / "notes.md").write_text("")
-        ids = {
-            _propose_id(p, tmp_path)
-            for p in tmp_path.rglob("notes.md")
-        }
+        ids = {_propose_id(p, tmp_path) for p in tmp_path.rglob("notes.md")}
         assert ids == {
             "regions-east-notes",
             "regions-west-notes",
@@ -520,10 +493,7 @@ class TestProposeId:
     def test_dir_with_non_alnum_chars_gets_slugified(self, tmp_path):
         (tmp_path / "My Dir (v2)").mkdir()
         (tmp_path / "My Dir (v2)/self.md").write_text("")
-        assert (
-            _propose_id(tmp_path / "My Dir (v2)/self.md", tmp_path)
-            == "my-dir-v2"
-        )
+        assert _propose_id(tmp_path / "My Dir (v2)/self.md", tmp_path) == "my-dir-v2"
 
 
 class TestAdoptMigrateRefs:
@@ -532,24 +502,20 @@ class TestAdoptMigrateRefs:
     def test_simple_path_ref_migrated(self, tmp_path):
         """[foo](foo.md) → [[id:foo|foo]] + frontmatter link added."""
         (tmp_path / "target.md").write_text("# Target\n")
-        (tmp_path / "src.md").write_text(
-            "# Src\n\nLink: [target](target.md).\n"
-        )
+        (tmp_path / "src.md").write_text("# Src\n\nLink: [target](target.md).\n")
         adopt_tree(tmp_path, migrate_refs=True)
         src_content = (tmp_path / "src.md").read_text()
         assert "[[id:target|target]]" in src_content
         assert "(target.md)" not in src_content
         fm, _ = parse_frontmatter(tmp_path / "src.md", src_content)
-        assert any(l.get("to") == "target" for l in fm["links"])
+        assert any(link.get("to") == "target" for link in fm["links"])
         # Tree is sound
         assert check(load_tree(tmp_path)) == []
 
     def test_relative_path_migrated(self, tmp_path):
         (tmp_path / "sub").mkdir()
         (tmp_path / "target.md").write_text("# Target\n")
-        (tmp_path / "sub/src.md").write_text(
-            "# Src\n\n[up one](../target.md)\n"
-        )
+        (tmp_path / "sub/src.md").write_text("# Src\n\n[up one](../target.md)\n")
         adopt_tree(tmp_path, migrate_refs=True)
         content = (tmp_path / "sub/src.md").read_text()
         assert "[[id:target|up one]]" in content
@@ -557,26 +523,20 @@ class TestAdoptMigrateRefs:
 
     def test_anchor_preserved(self, tmp_path):
         (tmp_path / "target.md").write_text("# Target\n")
-        (tmp_path / "src.md").write_text(
-            "# Src\n\n[Section X](target.md#section-x)\n"
-        )
+        (tmp_path / "src.md").write_text("# Src\n\n[Section X](target.md#section-x)\n")
         adopt_tree(tmp_path, migrate_refs=True)
         content = (tmp_path / "src.md").read_text()
         assert "[[id:target#section-x|Section X]]" in content
 
     def test_display_text_preserved(self, tmp_path):
         (tmp_path / "data-glossary.md").write_text("# Data Glossary\n")
-        (tmp_path / "src.md").write_text(
-            "# Src\n\n[Data Glossary](data-glossary.md)\n"
-        )
+        (tmp_path / "src.md").write_text("# Src\n\n[Data Glossary](data-glossary.md)\n")
         adopt_tree(tmp_path, migrate_refs=True)
         content = (tmp_path / "src.md").read_text()
         assert "[[id:data-glossary|Data Glossary]]" in content
 
     def test_unresolvable_ref_skipped_with_note(self, tmp_path):
-        (tmp_path / "src.md").write_text(
-            "# Src\n\n[ghost](missing-target.md)\n"
-        )
+        (tmp_path / "src.md").write_text("# Src\n\n[ghost](missing-target.md)\n")
         actions = adopt_tree(tmp_path, migrate_refs=True)
         # Original ref is left in place
         content = (tmp_path / "src.md").read_text()
@@ -634,9 +594,7 @@ class TestAdoptMigrateRefs:
 
     def test_all_three_case_variants_detected(self, tmp_path):
         """`.MD`, `.Md`, and `.mD` all produce case-mismatch reports."""
-        (tmp_path / "src.md").write_text(
-            "[a](one.MD) [b](two.Md) [c](three.mD)"
-        )
+        (tmp_path / "src.md").write_text("[a](one.MD) [b](two.Md) [c](three.mD)")
         actions = adopt_tree(tmp_path, migrate_refs=True)
         skips = [a for a in actions if a.startswith("SKIP-REF")]
         assert len(skips) == 3
@@ -653,9 +611,7 @@ class TestAdoptMigrateRefs:
 
     def test_ref_escaping_tree_root_is_unresolvable(self, tmp_path):
         (tmp_path / "inner").mkdir()
-        (tmp_path / "inner/src.md").write_text(
-            "# Src\n\n[outside](../../outside.md)\n"
-        )
+        (tmp_path / "inner/src.md").write_text("# Src\n\n[outside](../../outside.md)\n")
         actions = adopt_tree(tmp_path / "inner", migrate_refs=True)
         skip_note = next(a for a in actions if a.startswith("SKIP-REF"))
         # Escape message uses the absolute resolved path so author can see
@@ -669,29 +625,18 @@ class TestAdoptMigrateRefs:
         """Tree with pre-existing croc refs but missing frontmatter is
         adopted and the refs become declared strong links (Rule 5)."""
         (tmp_path / "target.md").write_text("# Target\n")
-        (tmp_path / "src.md").write_text(
-            "# Src\n\n[target](target.md)\n"
-        )
+        (tmp_path / "src.md").write_text("# Src\n\n[target](target.md)\n")
         adopt_tree(tmp_path, migrate_refs=True)
         # Both files have frontmatter now and src declares the link
-        fm_src, _ = parse_frontmatter(
-            tmp_path / "src.md", (tmp_path / "src.md").read_text()
-        )
-        assert any(
-            l.get("to") == "target" and l.get("strength") == "strong"
-            for l in fm_src["links"]
-        )
+        fm_src, _ = parse_frontmatter(tmp_path / "src.md", (tmp_path / "src.md").read_text())
+        assert any(link.get("to") == "target" and link.get("strength") == "strong" for link in fm_src["links"])
 
     def test_multiple_refs_to_same_target_only_one_link_entry(self, tmp_path):
         (tmp_path / "target.md").write_text("# Target\n")
-        (tmp_path / "src.md").write_text(
-            "# Src\n\n[a](target.md) and again [b](target.md#s).\n"
-        )
+        (tmp_path / "src.md").write_text("# Src\n\n[a](target.md) and again [b](target.md#s).\n")
         adopt_tree(tmp_path, migrate_refs=True)
-        fm, _ = parse_frontmatter(
-            tmp_path / "src.md", (tmp_path / "src.md").read_text()
-        )
-        matching = [l for l in fm["links"] if l.get("to") == "target"]
+        fm, _ = parse_frontmatter(tmp_path / "src.md", (tmp_path / "src.md").read_text())
+        matching = [link for link in fm["links"] if link.get("to") == "target"]
         assert len(matching) == 1
 
     def test_default_adopt_migrates_refs(self, tmp_path):
@@ -729,9 +674,7 @@ class TestAdoptMigrateRefs:
         adopt_tree(tmp_path)  # first adoption — both files get frontmatter
         # Now simulate the user pasting a path-ref into the managed file
         existing = (tmp_path / "src.md").read_text()
-        (tmp_path / "src.md").write_text(
-            existing + "\n[late ref](target.md)\n"
-        )
+        (tmp_path / "src.md").write_text(existing + "\n[late ref](target.md)\n")
         # Second adopt must reach the managed file and migrate the ref
         actions = adopt_tree(tmp_path)
         src_actions = [a for a in actions if "src.md" in a and "MIGRATE" in a]
@@ -803,9 +746,7 @@ class TestAdoptMigrateRefsReporting:
         """One write per file → one action line. AUGMENT + migration
         must not render as two separate lines."""
         (tmp_path / "target.md").write_text("# t")
-        (tmp_path / "src.md").write_text(
-            "---\ntype: foo\n---\n\n[t](target.md)\n"
-        )
+        (tmp_path / "src.md").write_text("---\ntype: foo\n---\n\n[t](target.md)\n")
         actions = adopt_tree(tmp_path, migrate_refs=True)
         src_actions = [a for a in actions if "src.md" in a and not a.startswith("SKIP-REF")]
         assert len(src_actions) == 1
@@ -815,9 +756,7 @@ class TestAdoptMigrateRefsReporting:
     def test_many_refs_are_truncated_with_count(self, tmp_path):
         for name in ("a", "b", "c", "d", "e"):
             (tmp_path / f"{name}.md").write_text(f"# {name}")
-        (tmp_path / "src.md").write_text(
-            "[a](a.md) [b](b.md) [c](c.md) [d](d.md) [e](e.md)"
-        )
+        (tmp_path / "src.md").write_text("[a](a.md) [b](b.md) [c](c.md) [d](d.md) [e](e.md)")
         actions = adopt_tree(tmp_path, migrate_refs=True)
         src_action = next(a for a in actions if "src.md" in a and "migrated" in a)
         assert "migrated 5 refs" in src_action
@@ -828,9 +767,7 @@ class TestAdoptMigrateRefsReporting:
 
     def test_duplicate_refs_to_same_target_counted_once(self, tmp_path):
         (tmp_path / "target.md").write_text("# t")
-        (tmp_path / "src.md").write_text(
-            "[one](target.md) [two](target.md) [three](target.md)"
-        )
+        (tmp_path / "src.md").write_text("[one](target.md) [two](target.md) [three](target.md)")
         actions = adopt_tree(tmp_path, migrate_refs=True)
         src_action = next(a for a in actions if "src.md" in a and "migrated" in a)
         assert "migrated 1 ref" in src_action
@@ -849,9 +786,7 @@ class TestAdoptMigrateRefsReporting:
         code paths run in the same plan entry.
         """
         (tmp_path / "good.md").write_text("# good")
-        (tmp_path / "src.md").write_text(
-            "[good](good.md) and [bad](ghost.md)"
-        )
+        (tmp_path / "src.md").write_text("[good](good.md) and [bad](ghost.md)")
         actions = adopt_tree(tmp_path, migrate_refs=True)
         # One migration in the SCAFFOLD action line
         src_actions = [a for a in actions if "src.md" in a and not a.startswith("SKIP-REF")]
@@ -906,9 +841,7 @@ class TestScanPathRefs:
         assert reports[0].raw_path == "missing.md"
 
     def test_ignores_non_md_paths(self, tmp_path):
-        (tmp_path / "src.md").write_text(
-            "[image](foo.png) and [site](https://example.com)"
-        )
+        (tmp_path / "src.md").write_text("[image](foo.png) and [site](https://example.com)")
         assert scan_path_refs(tmp_path) == []
 
     def test_ignores_croc_dialect_refs(self, tmp_path):
@@ -1026,7 +959,9 @@ class TestMolt:
     def test_anchor_preserved(self, tmp_path, write_doc):
         write_doc(tmp_path, "target.md", "target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="See [[id:target#section-x|the section]].",
         )
@@ -1037,34 +972,36 @@ class TestMolt:
     def test_display_text_preserved(self, tmp_path, write_doc):
         write_doc(tmp_path, "target.md", "target", title="Target Doc")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="See [[id:target|the custom display]].",
         )
         molt_tree(tmp_path)
-        assert "[the custom display](target.md)" in (
-            tmp_path / "src.md"
-        ).read_text()
+        assert "[the custom display](target.md)" in (tmp_path / "src.md").read_text()
 
     def test_bare_ref_falls_back_to_target_title(self, tmp_path, write_doc):
         """Bare `[[id:X]]` (no display) uses target's `title` field."""
         write_doc(tmp_path, "target.md", "target", title="The Target Doc")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="See [[id:target]].",
         )
         molt_tree(tmp_path)
-        assert "[The Target Doc](target.md)" in (
-            tmp_path / "src.md"
-        ).read_text()
+        assert "[The Target Doc](target.md)" in (tmp_path / "src.md").read_text()
 
     def test_weak_ref_rewritten_to_plain_link(self, tmp_path, write_doc):
         """Weak refs become plain markdown links — the strong/weak
         distinction is intentionally lossy on molt."""
         write_doc(tmp_path, "target.md", "target", title="Target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "weak"}],
             body="See [[see:target|also]].",
         )
@@ -1077,33 +1014,35 @@ class TestMolt:
         """Nested source → parent-dir target produces `../target.md`."""
         write_doc(tmp_path, "target.md", "target", title="Target")
         write_doc(
-            tmp_path, "sub/src.md", "src",
+            tmp_path,
+            "sub/src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="See [[id:target|up]].",
         )
         molt_tree(tmp_path)
-        assert "[up](../target.md)" in (
-            tmp_path / "sub/src.md"
-        ).read_text()
+        assert "[up](../target.md)" in (tmp_path / "sub/src.md").read_text()
 
     def test_deeply_nested_relative_paths(self, tmp_path, write_doc):
         write_doc(tmp_path, "a/b/c/target.md", "target", title="Target")
         write_doc(
-            tmp_path, "x/y/src.md", "src",
+            tmp_path,
+            "x/y/src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="[[id:target|t]]",
         )
         molt_tree(tmp_path)
         # From x/y/ to a/b/c/: ../../a/b/c/target.md
-        assert "[t](../../a/b/c/target.md)" in (
-            tmp_path / "x/y/src.md"
-        ).read_text()
+        assert "[t](../../a/b/c/target.md)" in (tmp_path / "x/y/src.md").read_text()
 
     def test_paths_use_forward_slashes(self, tmp_path, write_doc):
         """Output must use `/` even on Windows-style OSes (markdown portability)."""
         write_doc(tmp_path, "sub/target.md", "target", title="t")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="[[id:target|t]]",
         )
@@ -1175,8 +1114,7 @@ class TestMolt:
     def test_refuses_on_broken_tree(self, sample_tree):
         """Can't molt an unsound tree — same precondition as rename."""
         (sample_tree / "broken.md").write_text(
-            "---\nid: broken\ntitle: t\nkind: leaf\n"
-            "links:\n  - {to: ghost, strength: strong}\n---\n[[id:ghost]]\n"
+            "---\nid: broken\ntitle: t\nkind: leaf\nlinks:\n  - {to: ghost, strength: strong}\n---\n[[id:ghost]]\n"
         )
         with pytest.raises(OpError, match="not sound"):
             molt_tree(sample_tree)
@@ -1212,14 +1150,10 @@ class TestMolt:
         the post-molt content to the pre-adopt content for the pieces
         where equivalence is verifiable."""
         (tmp_path / "target.md").write_text("# Target content\n")
-        (tmp_path / "src.md").write_text(
-            "# Source\n\nSee [target](target.md).\n"
-        )
-        original_src = (tmp_path / "src.md").read_text()
-        original_target = (tmp_path / "target.md").read_text()
+        (tmp_path / "src.md").write_text("# Source\n\nSee [target](target.md).\n")
 
-        adopt_tree(tmp_path)       # dialect + frontmatter added
-        molt_tree(tmp_path)        # dialect + frontmatter removed
+        adopt_tree(tmp_path)  # dialect + frontmatter added
+        molt_tree(tmp_path)  # dialect + frontmatter removed
 
         # After the round-trip, the body link text and path form match
         # (modulo the file acquiring and losing a `title: Src` frontmatter,
@@ -1245,7 +1179,9 @@ class TestMolt:
         exemption). Molt must not KeyError — it should leave the ref
         in place and surface a SKIP-MOLT-REF note."""
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "ghost", "strength": "weak"}],
             body="Aspirational link: [[see:ghost|future doc]].",
         )
@@ -1262,7 +1198,9 @@ class TestMolt:
     def test_weak_ref_to_missing_bare_form(self, tmp_path, write_doc):
         """Bare `[[see:X]]` (no display) with missing target — same policy."""
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "ghost", "strength": "weak"}],
             body="See [[see:ghost]].",
         )
@@ -1270,14 +1208,14 @@ class TestMolt:
         assert "[[see:ghost]]" in (tmp_path / "src.md").read_text()
         assert any(a.startswith("SKIP-MOLT-REF") for a in actions)
 
-    def test_mixed_resolvable_and_dangling_weak_refs_in_one_file(
-        self, tmp_path, write_doc
-    ):
+    def test_mixed_resolvable_and_dangling_weak_refs_in_one_file(self, tmp_path, write_doc):
         """A file with both kinds: resolvable refs get rewritten; the
         dangling weak ref stays put; both are reflected in the log."""
         write_doc(tmp_path, "target.md", "target", title="Target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[
                 {"to": "target", "strength": "strong"},
                 {"to": "ghost", "strength": "weak"},
@@ -1287,18 +1225,18 @@ class TestMolt:
         actions = molt_tree(tmp_path)
         content = (tmp_path / "src.md").read_text()
         assert "[the target](target.md)" in content  # resolvable → rewritten
-        assert "[[see:ghost]]" in content            # dangling → preserved
+        assert "[[see:ghost]]" in content  # dangling → preserved
         # Action log shows both the MOLT (for the rewrite) and the SKIP-MOLT-REF
         assert any("MOLT src.md" in a and "rewrote 1 ref" in a for a in actions)
         assert any(a.startswith("SKIP-MOLT-REF") and "ghost" in a for a in actions)
 
-    def test_dry_run_surfaces_dangling_weak_refs_in_plan(
-        self, tmp_path, write_doc
-    ):
+    def test_dry_run_surfaces_dangling_weak_refs_in_plan(self, tmp_path, write_doc):
         """Users must see dangling weak refs during dry-run — discovering
         leaked croc syntax at write time would be a nasty surprise."""
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "ghost", "strength": "weak"}],
             body="[[see:ghost|future]]",
         )
@@ -1312,23 +1250,17 @@ class TestMoltHelpers:
     """Isolated helpers for precise assertions."""
 
     def test_molt_frontmatter_strips_only_croc_fields(self):
-        fm, stripped = _molt_frontmatter(
-            {"id": "x", "title": "T", "kind": "leaf", "links": [], "type": "foo"}
-        )
+        fm, stripped = _molt_frontmatter({"id": "x", "title": "T", "kind": "leaf", "links": [], "type": "foo"})
         assert fm == {"title": "T", "type": "foo"}
         assert stripped == ["id", "kind", "links"]
 
     def test_molt_frontmatter_returns_none_when_empty(self):
-        fm, stripped = _molt_frontmatter(
-            {"id": "x", "kind": "leaf", "links": []}
-        )
+        fm, stripped = _molt_frontmatter({"id": "x", "kind": "leaf", "links": []})
         assert fm is None
         assert stripped == ["id", "kind", "links"]
 
     def test_molt_frontmatter_preserves_insertion_order(self):
-        fm, _ = _molt_frontmatter(
-            {"type": "a", "id": "x", "mirrors": [1], "title": "T", "links": []}
-        )
+        fm, _ = _molt_frontmatter({"type": "a", "id": "x", "mirrors": [1], "title": "T", "links": []})
         assert list(fm.keys()) == ["type", "mirrors", "title"]
 
 
@@ -1337,6 +1269,7 @@ class TestRefRegexCaptureGroups:
 
     def test_bare_ref_captures_only_id(self):
         from croc.check import STRONG_REF
+
         m = STRONG_REF.search("text [[id:foo]] more")
         assert m is not None
         assert m.group(1) == "foo"
@@ -1345,6 +1278,7 @@ class TestRefRegexCaptureGroups:
 
     def test_ref_with_anchor_only(self):
         from croc.check import STRONG_REF
+
         m = STRONG_REF.search("[[id:foo#section]]")
         assert m.group(1) == "foo"
         assert m.group(2) == "section"
@@ -1352,6 +1286,7 @@ class TestRefRegexCaptureGroups:
 
     def test_ref_with_display_only(self):
         from croc.check import STRONG_REF
+
         m = STRONG_REF.search("[[id:foo|Display]]")
         assert m.group(1) == "foo"
         assert m.group(2) is None
@@ -1359,6 +1294,7 @@ class TestRefRegexCaptureGroups:
 
     def test_ref_with_anchor_and_display(self):
         from croc.check import STRONG_REF
+
         m = STRONG_REF.search("[[id:foo#sec|Display]]")
         assert m.group(1) == "foo"
         assert m.group(2) == "sec"
@@ -1366,6 +1302,7 @@ class TestRefRegexCaptureGroups:
 
     def test_weak_ref_same_group_layout(self):
         from croc.check import WEAK_REF
+
         m = WEAK_REF.search("[[see:foo#sec|D]]")
         assert m.group(1) == "foo"
         assert m.group(2) == "sec"

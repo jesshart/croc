@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-import sys
 
 import typer
 
@@ -38,7 +37,7 @@ def check_cmd(
         docs = load_tree(root)
     except TreeError as e:
         typer.echo(f"borrow check FAILED:\n  {e}", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from e
 
     for w in scan_symlinks(root):
         typer.echo(w, err=True)
@@ -67,7 +66,7 @@ def index_cmd(
         docs = load_tree(root)
     except TreeError as e:
         typer.echo(str(e), err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from e
     typer.echo(json.dumps(build_index(docs), indent=2, sort_keys=True))
 
 
@@ -75,19 +74,15 @@ def index_cmd(
 def move_cmd(
     src: pathlib.Path = typer.Argument(..., help="Source file."),
     dst: pathlib.Path = typer.Argument(..., help="Destination file or directory."),
-    root: pathlib.Path = typer.Option(
-        pathlib.Path("."), "--root", "-r", help="Tree root."
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Run all checks; do not move."
-    ),
+    root: pathlib.Path = typer.Option(pathlib.Path("."), "--root", "-r", help="Tree root."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run all checks; do not move."),
 ) -> None:
     """Relocate a file on disk. IDs stay valid — no references rewritten."""
     try:
         final_dst = move_file(root, src, dst, dry_run=dry_run)
     except OpError as e:
         typer.echo(f"move FAILED: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
     prefix = "would move" if dry_run else "moved"
     typer.echo(f"{prefix}: {src} -> {final_dst.relative_to(root.resolve())}")
 
@@ -96,19 +91,15 @@ def move_cmd(
 def rename_cmd(
     old_id: str = typer.Argument(..., help="Current id."),
     new_id: str = typer.Argument(..., help="New id."),
-    root: pathlib.Path = typer.Option(
-        pathlib.Path("."), "--root", "-r", help="Tree root."
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Run validation + simulation; do not write."
-    ),
+    root: pathlib.Path = typer.Option(pathlib.Path("."), "--root", "-r", help="Tree root."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Run validation + simulation; do not write."),
 ) -> None:
     """Rename an id. Every strong and weak reference is rewritten atomically."""
     try:
         changed = rename_id(root, old_id, new_id, dry_run=dry_run)
     except OpError as e:
         typer.echo(f"rename FAILED: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
     verb = "would rename" if dry_run else "renamed"
     typer.echo(f"{verb}: {old_id} -> {new_id} ({len(changed)} files)")
     for path in changed:
@@ -117,23 +108,18 @@ def rename_cmd(
 
 @app.command("init")
 def init_cmd(
-    path: pathlib.Path = typer.Argument(
-        pathlib.Path("."), help="Tree root to initialize."
-    ),
-    adopt: bool = typer.Option(
-        False, "--adopt", help="Scaffold frontmatter into every .md that lacks it."
-    ),
+    path: pathlib.Path = typer.Argument(pathlib.Path("."), help="Tree root to initialize."),
+    adopt: bool = typer.Option(False, "--adopt", help="Scaffold frontmatter into every .md that lacks it."),
     migrate_refs: bool = typer.Option(
-        True, "--migrate-refs/--no-migrate-refs",
+        True,
+        "--migrate-refs/--no-migrate-refs",
         help=(
             "During --adopt, rewrite markdown path-refs to the croc "
             "[[id:X]] dialect. On by default; pass --no-migrate-refs to "
             "adopt only frontmatter shape and leave body content alone."
         ),
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Preview actions; do not write."
-    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions; do not write."),
 ) -> None:
     """Initialize a croc tree. Optionally scaffold missing frontmatter."""
     path = path.resolve()
@@ -141,8 +127,7 @@ def init_cmd(
 
     if marker.exists() and not adopt:
         typer.echo(
-            f"init FAILED: {marker} already exists; "
-            f"use --adopt to scaffold missing frontmatter",
+            f"init FAILED: {marker} already exists; use --adopt to scaffold missing frontmatter",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -151,12 +136,10 @@ def init_cmd(
     try:
         actions += init_tree(path, dry_run=dry_run)
         if adopt:
-            actions += adopt_tree(
-                path, dry_run=dry_run, migrate_refs=migrate_refs
-            )
+            actions += adopt_tree(path, dry_run=dry_run, migrate_refs=migrate_refs)
     except OpError as e:
         typer.echo(f"init FAILED: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     for a in actions:
         prefix = "would " if dry_run else ""
@@ -172,11 +155,10 @@ def init_cmd(
 
 @app.command("molt")
 def molt_cmd(
-    root: pathlib.Path = typer.Argument(
-        pathlib.Path("."), help="Tree root."
-    ),
+    root: pathlib.Path = typer.Argument(pathlib.Path("."), help="Tree root."),
     dry_run: bool = typer.Option(
-        False, "--dry-run",
+        False,
+        "--dry-run",
         help="Preview actions; do not write.",
     ),
 ) -> None:
@@ -191,7 +173,7 @@ def molt_cmd(
         actions = molt_tree(root, dry_run=dry_run)
     except OpError as e:
         typer.echo(f"molt FAILED: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     for a in actions:
         prefix = "would " if dry_run else ""
@@ -207,11 +189,10 @@ def molt_cmd(
 
 @app.command("refs")
 def refs_cmd(
-    root: pathlib.Path = typer.Argument(
-        pathlib.Path("."), help="Tree root."
-    ),
+    root: pathlib.Path = typer.Argument(pathlib.Path("."), help="Tree root."),
     unresolved_only: bool = typer.Option(
-        False, "--unresolved",
+        False,
+        "--unresolved",
         help="Report only path-refs that don't resolve to a doc in the tree.",
     ),
 ) -> None:
@@ -225,7 +206,7 @@ def refs_cmd(
         reports = scan_path_refs(root)
     except OpError as e:
         typer.echo(f"refs FAILED: {e}", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from e
 
     unresolved_count = 0
     for r in reports:
@@ -239,9 +220,7 @@ def refs_cmd(
             unresolved_count += 1
 
     if unresolved_count:
-        typer.echo(
-            f"\n{unresolved_count} unresolved ref(s) across the tree", err=True
-        )
+        typer.echo(f"\n{unresolved_count} unresolved ref(s) across the tree", err=True)
         raise typer.Exit(code=1)
 
 

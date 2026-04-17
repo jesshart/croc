@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pathlib
-
 import pytest
 
 from croc.check import (
@@ -73,14 +71,11 @@ class TestParseFrontmatter:
 
     @pytest.mark.parametrize(
         "id_value",
-        ["adr-0042", "design.registry.pattern", "runbook_auth",
-         "7f3a2c01-4b2d-4e6f-9a1b-3c5d7e9f1a2b"],
+        ["adr-0042", "design.registry.pattern", "runbook_auth", "7f3a2c01-4b2d-4e6f-9a1b-3c5d7e9f1a2b"],
     )
     def test_valid_id_shapes(self, tmp_path, id_value):
         p = tmp_path / "x.md"
-        fm, body = parse_frontmatter(
-            p, f"---\nid: {id_value}\ntitle: t\nkind: leaf\nlinks: []\n---\nbody"
-        )
+        fm, body = parse_frontmatter(p, f"---\nid: {id_value}\ntitle: t\nkind: leaf\nlinks: []\n---\nbody")
         assert fm["id"] == id_value
 
 
@@ -102,7 +97,9 @@ class TestRules:
 
     def test_weak_link_to_missing_is_tolerated(self, tmp_path, write_doc):
         write_doc(
-            tmp_path, "a.md", "a",
+            tmp_path,
+            "a.md",
+            "a",
             links=[{"to": "ghost", "strength": "weak"}],
             body="See [[see:ghost]].",
         )
@@ -114,18 +111,14 @@ class TestRules:
         assert any("missing `links`" in e for e in errors)
 
     def test_schema_links_not_a_list(self, tmp_path):
-        (tmp_path / "x.md").write_text(
-            "---\nid: a\ntitle: t\nkind: leaf\nlinks: oops\n---\nbody"
-        )
+        (tmp_path / "x.md").write_text("---\nid: a\ntitle: t\nkind: leaf\nlinks: oops\n---\nbody")
         errors = check(load_tree(tmp_path))
         assert any("`links` must be a list" in e for e in errors)
         # No per-character cascade
         assert sum("must be a list" in e for e in errors) == 1
 
     def test_link_missing_to(self, tmp_path):
-        (tmp_path / "x.md").write_text(
-            "---\nid: a\ntitle: t\nkind: leaf\nlinks:\n  - { strength: strong }\n---\nbody"
-        )
+        (tmp_path / "x.md").write_text("---\nid: a\ntitle: t\nkind: leaf\nlinks:\n  - { strength: strong }\n---\nbody")
         errors = check(load_tree(tmp_path))
         assert any("link missing `to`" in e for e in errors)
 
@@ -133,7 +126,9 @@ class TestRules:
         # Body references X but frontmatter doesn't declare a strong link to X
         write_doc(tmp_path, "target.md", "target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[],
             body="[[id:target]]",
         )
@@ -147,7 +142,9 @@ class TestExtendedRefDialect:
     def test_bare_id_still_works(self, tmp_path, write_doc):
         write_doc(tmp_path, "target.md", "target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="see [[id:target]]",
         )
@@ -156,7 +153,9 @@ class TestExtendedRefDialect:
     def test_id_with_anchor(self, tmp_path, write_doc):
         write_doc(tmp_path, "target.md", "target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="see [[id:target#section]]",
         )
@@ -165,7 +164,9 @@ class TestExtendedRefDialect:
     def test_id_with_display_text(self, tmp_path, write_doc):
         write_doc(tmp_path, "target.md", "target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="see [[id:target|The Target]]",
         )
@@ -174,7 +175,9 @@ class TestExtendedRefDialect:
     def test_id_with_anchor_and_display(self, tmp_path, write_doc):
         write_doc(tmp_path, "target.md", "target")
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             links=[{"to": "target", "strength": "strong"}],
             body="see [[id:target#section|The Section]]",
         )
@@ -182,7 +185,9 @@ class TestExtendedRefDialect:
 
     def test_dangling_still_detected_with_richer_syntax(self, tmp_path, write_doc):
         write_doc(
-            tmp_path, "src.md", "src",
+            tmp_path,
+            "src.md",
+            "src",
             body="see [[id:ghost#section|Ghost]]",
         )
         errors = check(load_tree(tmp_path))
@@ -193,9 +198,7 @@ class TestSymlinks:
     def test_symlinked_dir_produces_warning(self, tmp_path):
         external = tmp_path / "external"
         external.mkdir()
-        (external / "hidden.md").write_text(
-            "---\nid: hidden\ntitle: t\nkind: leaf\nlinks: []\n---\nbody"
-        )
+        (external / "hidden.md").write_text("---\nid: hidden\ntitle: t\nkind: leaf\nlinks: []\n---\nbody")
         main = tmp_path / "main"
         main.mkdir()
         (main / "linked").symlink_to(external)

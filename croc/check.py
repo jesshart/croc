@@ -46,12 +46,8 @@ ID_RE = re.compile(rf"^{ID_CHARS}$")
 # The checker still depends only on group(1); the extra groups exist so
 # `molt` can reconstruct faithful plain-markdown output without re-
 # parsing the ref.
-STRONG_REF = re.compile(
-    rf"\[\[id:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]"
-)
-WEAK_REF = re.compile(
-    rf"\[\[see:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]"
-)
+STRONG_REF = re.compile(rf"\[\[id:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]")
+WEAK_REF = re.compile(rf"\[\[see:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]")
 
 
 @dataclass
@@ -85,9 +81,7 @@ def parse_frontmatter(path: pathlib.Path, raw: str) -> tuple[dict, str]:
         raise TreeError(f"{path}: invalid YAML frontmatter: {e}") from e
 
     if not isinstance(fm, dict):
-        raise TreeError(
-            f"{path}: frontmatter must be a mapping, got {type(fm).__name__}"
-        )
+        raise TreeError(f"{path}: frontmatter must be a mapping, got {type(fm).__name__}")
     if "id" not in fm:
         raise TreeError(f"{path}: no `id` in frontmatter")
     # NewType("DocId", str) must not lie about the runtime type. YAML will
@@ -96,12 +90,11 @@ def parse_frontmatter(path: pathlib.Path, raw: str) -> tuple[dict, str]:
     if not isinstance(fm["id"], str):
         raise TreeError(
             f"{path}: `id` must be a string, got {type(fm['id']).__name__} "
-            f"(quote numeric-looking ids in YAML: `id: \"{fm['id']}\"`)"
+            f'(quote numeric-looking ids in YAML: `id: "{fm["id"]}"`)'
         )
     if not ID_RE.fullmatch(fm["id"]):
         raise TreeError(
-            f"{path}: `id` {fm['id']!r} contains illegal characters "
-            f"(allowed: letters, digits, `_`, `.`, `-`)"
+            f"{path}: `id` {fm['id']!r} contains illegal characters (allowed: letters, digits, `_`, `.`, `-`)"
         )
     return fm, body
 
@@ -137,8 +130,7 @@ def scan_symlinks(root: pathlib.Path) -> list[str]:
     for p in sorted(root.rglob("*")):
         if p.is_symlink():
             warnings.append(
-                f"warning: symlink {p.relative_to(root)} not traversed "
-                f"(symlinks are never followed to avoid cycles)"
+                f"warning: symlink {p.relative_to(root)} not traversed (symlinks are never followed to avoid cycles)"
             )
     return warnings
 
@@ -183,10 +175,7 @@ def check(docs: list[Doc]) -> list[str]:
     seen: dict[DocId, DocPath] = {}
     for d in docs:
         if d.id in seen:
-            errors.append(
-                f"E-OWNERSHIP: id '{d.id}' declared by both "
-                f"{seen[d.id]} and {d.path}"
-            )
+            errors.append(f"E-OWNERSHIP: id '{d.id}' declared by both {seen[d.id]} and {d.path}")
         seen[d.id] = d.path
 
     index = build_index(docs)
@@ -206,10 +195,7 @@ def check(docs: list[Doc]) -> list[str]:
         for m in STRONG_REF.finditer(d.body):
             target = DocId(m.group(1))
             if target not in index:
-                errors.append(
-                    f"E-DANGLING {d.path}: strong link [[id:{target}]] "
-                    f"points to a nonexistent doc"
-                )
+                errors.append(f"E-DANGLING {d.path}: strong link [[id:{target}]] points to a nonexistent doc")
 
         # Rule 4: lifetime — strong links in frontmatter must resolve.
         for link in links:
@@ -217,16 +203,11 @@ def check(docs: list[Doc]) -> list[str]:
             strength = link.get("strength", "strong")
             if strength == "strong" and target not in index:
                 errors.append(
-                    f"E-LIFETIME {d.path}: strong link to '{target}' "
-                    f"outlives its target (deleted without retargeting)"
+                    f"E-LIFETIME {d.path}: strong link to '{target}' outlives its target (deleted without retargeting)"
                 )
 
         # Rule 5: identity — declared strong links match body's strong refs.
-        declared_strong = {
-            DocId(link["to"])
-            for link in links
-            if link.get("strength", "strong") == "strong"
-        }
+        declared_strong = {DocId(link["to"]) for link in links if link.get("strength", "strong") == "strong"}
         body_strong = {DocId(m.group(1)) for m in STRONG_REF.finditer(d.body)}
         if declared_strong != body_strong:
             missing = body_strong - declared_strong

@@ -25,25 +25,24 @@ import pathlib
 import re
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import yaml
 
 from croc.check import (
-    Doc,
-    DocId,
-    DocPath,
     ID_RE,
     STRONG_REF,
     WEAK_REF,
+    Doc,
+    DocId,
+    DocPath,
     TreeError,
     build_index,
     check,
     load_tree,
     parse_frontmatter,
 )
-
 
 # Markdown path-ref pattern: matches `[text](relative/path.md[#anchor])`.
 # Used for both migration (`--migrate-refs`) and the `refs` diagnostic.
@@ -54,9 +53,7 @@ from croc.check import (
 # catch any case variant at detection. The resolver then rejects non-lowercase
 # variants with a targeted case-sensitivity diagnostic — letting `.MD` pass
 # silently would be the exact failure mode croc exists to prevent.
-MD_PATH_REF = re.compile(
-    r"\[(?P<text>[^\]]*)\]\((?P<path>[^)#\s]+\.[Mm][Dd])(?P<anchor>#[^)]+)?\)"
-)
+MD_PATH_REF = re.compile(r"\[(?P<text>[^\]]*)\]\((?P<path>[^)#\s]+\.[Mm][Dd])(?P<anchor>#[^)]+)?\)")
 
 
 def _case_mismatch_ext(rel_path: str) -> bool:
@@ -141,10 +138,7 @@ def rename_id(
     root = root.resolve()
 
     if not ID_RE.fullmatch(new_id):
-        raise OpError(
-            f"{new_id!r} is not a valid id "
-            f"(allowed: letters, digits, `_`, `.`, `-`)"
-        )
+        raise OpError(f"{new_id!r} is not a valid id (allowed: letters, digits, `_`, `.`, `-`)")
     if old_id == new_id:
         raise OpError("old and new id are the same")
 
@@ -154,9 +148,7 @@ def rename_id(
     if old_id not in index:
         raise OpError(f"no doc with id {old_id!r}")
     if new_id in index:
-        raise OpError(
-            f"id {new_id!r} already in use by {index[new_id]}"
-        )
+        raise OpError(f"id {new_id!r} already in use by {index[DocId(new_id)]}")
 
     plan = _plan_rename(docs, old_id, new_id)
 
@@ -263,9 +255,7 @@ def adopt_tree(
     skip_notes: list[str] = []
 
     for p in sorted(root.rglob("*.md")):
-        entry = _classify_for_adopt(
-            p, root, existing_ids, skip_notes, migrate_refs=migrate_refs
-        )
+        entry = _classify_for_adopt(p, root, existing_ids, skip_notes, migrate_refs=migrate_refs)
         if entry is not None:
             plan.append(entry)
 
@@ -284,17 +274,13 @@ def adopt_tree(
             )
         elif pid in seen_proposed:
             collisions.append(
-                f"{entry.path.relative_to(root)} and "
-                f"{seen_proposed[pid].relative_to(root)} both propose id {pid!r}"
+                f"{entry.path.relative_to(root)} and {seen_proposed[pid].relative_to(root)} both propose id {pid!r}"
             )
         else:
             seen_proposed[pid] = entry.path
 
     if collisions:
-        raise OpError(
-            "id collisions detected; resolve by renaming files or editing ids:\n  "
-            + "\n  ".join(collisions)
-        )
+        raise OpError("id collisions detected; resolve by renaming files or editing ids:\n  " + "\n  ".join(collisions))
 
     # Phase 2.5 (optional): migrate markdown path-refs in plan entries' bodies
     # to the croc dialect. Must run after collision detection (we need the
@@ -304,10 +290,7 @@ def adopt_tree(
         # Prune MIGRATE entries that turned out to have nothing to migrate
         # (e.g. managed file whose only path-refs were unresolvable — the
         # SKIP-REF notes already carry that information; no write needed).
-        plan = [
-            e for e in plan
-            if e.verb != "MIGRATE" or e.migrated_refs
-        ]
+        plan = [e for e in plan if e.verb != "MIGRATE" or e.migrated_refs]
 
     actions = list(skip_notes)
     for entry in plan:
@@ -346,9 +329,7 @@ def _format_adopt_action(entry: _AdoptEntry, root: pathlib.Path) -> str:
         if n > 3:
             suffix += f", +{n - 3} more"
         parts.append(f"migrated {n} ref{plural}: {suffix}")
-    return (
-        f"{entry.verb} {entry.path.relative_to(root)} ({'; '.join(parts)})"
-    )
+    return f"{entry.verb} {entry.path.relative_to(root)} ({'; '.join(parts)})"
 
 
 def _migrate_refs_in_plan(
@@ -379,9 +360,7 @@ def _migrate_refs_in_plan(
             continue  # shouldn't happen for plan entries we construct
         _, fm_text, body = parts
 
-        new_body, unresolved, migrated = _migrate_refs_in_body(
-            body, entry.path, root, path_to_id
-        )
+        new_body, unresolved, migrated = _migrate_refs_in_body(body, entry.path, root, path_to_id)
         entry.migrated_refs.extend(migrated)
 
         for note in unresolved:
@@ -392,14 +371,8 @@ def _migrate_refs_in_plan(
         # both refs we migrated AND any pre-existing `[[id:X]]` refs in
         # the body, so scaffolds with hand-written croc refs also work.
         fm = yaml.safe_load(fm_text) or {}
-        body_strong_ids = {
-            m.group(1) for m in STRONG_REF.finditer(new_body)
-        }
-        declared = {
-            link["to"]
-            for link in fm.get("links", [])
-            if isinstance(link, dict) and "to" in link
-        }
+        body_strong_ids = {m.group(1) for m in STRONG_REF.finditer(new_body)}
+        declared = {link["to"] for link in fm.get("links", []) if isinstance(link, dict) and "to" in link}
         missing = body_strong_ids - declared
 
         body_changed = new_body != body
@@ -466,10 +439,7 @@ def _migrate_refs_in_body(
         try:
             target_abs = (source_abs_path.parent / rel_path).resolve()
         except OSError as e:
-            unresolved.append(
-                f"{source_rel}: path ref {rel_path!r} could not be resolved "
-                f"({e})"
-            )
+            unresolved.append(f"{source_rel}: path ref {rel_path!r} could not be resolved ({e})")
             return m.group(0)
 
         # Phase 2: must land under the tree root. If not, surface the
@@ -477,10 +447,7 @@ def _migrate_refs_in_body(
         try:
             target_rel = target_abs.relative_to(root)
         except ValueError:
-            unresolved.append(
-                f"{source_rel}: path ref {rel_path!r} escapes tree root "
-                f"(resolved to: {target_abs})"
-            )
+            unresolved.append(f"{source_rel}: path ref {rel_path!r} escapes tree root (resolved to: {target_abs})")
             return m.group(0)
 
         # Phase 3: path is valid and under root, but no managed doc lives
@@ -488,8 +455,7 @@ def _migrate_refs_in_body(
         # symlink / missing-file issues are diagnosable at a glance.
         if target_abs not in path_to_id:
             unresolved.append(
-                f"{source_rel}: path ref {rel_path!r} does not resolve to "
-                f"any doc in the tree (tried: {target_rel})"
+                f"{source_rel}: path ref {rel_path!r} does not resolve to any doc in the tree (tried: {target_rel})"
             )
             return m.group(0)
 
@@ -513,10 +479,10 @@ def _migrate_refs_in_body(
 
 @dataclass
 class PathRefReport:
-    source: DocPath       # source file, relative to root
-    raw_path: str         # path as written in the markdown link
+    source: DocPath  # source file, relative to root
+    raw_path: str  # path as written in the markdown link
     target: DocPath | None  # resolved target, relative to root (None if unresolved)
-    resolved: bool        # whether the target exists as a file under root
+    resolved: bool  # whether the target exists as a file under root
     note: str | None = None  # reason for unresolved status, if explanatory
 
 
@@ -545,10 +511,7 @@ def scan_path_refs(root: pathlib.Path) -> list[PathRefReport]:
             note: str | None = None
 
             if _case_mismatch_ext(raw):
-                note = (
-                    "non-lowercase `.md` extension "
-                    "(croc recognizes `.md` only)"
-                )
+                note = "non-lowercase `.md` extension (croc recognizes `.md` only)"
             else:
                 try:
                     target_abs = (p.parent / raw).resolve()
@@ -613,33 +576,21 @@ def _classify_for_adopt(
     # --- File has frontmatter. Parse leniently; don't require croc schema. ---
     parts = raw.split("---\n", 2)
     if len(parts) < 3:
-        skip_notes.append(
-            f"SKIP {p.relative_to(root)}: unterminated frontmatter"
-        )
+        skip_notes.append(f"SKIP {p.relative_to(root)}: unterminated frontmatter")
         return None
     _, fm_text, body = parts
     try:
         fm = yaml.safe_load(fm_text) or {}
     except yaml.YAMLError as e:
-        skip_notes.append(
-            f"SKIP {p.relative_to(root)}: invalid YAML "
-            f"({str(e).splitlines()[0]})"
-        )
+        skip_notes.append(f"SKIP {p.relative_to(root)}: invalid YAML ({str(e).splitlines()[0]})")
         return None
     if not isinstance(fm, dict):
-        skip_notes.append(
-            f"SKIP {p.relative_to(root)}: frontmatter must be a mapping"
-        )
+        skip_notes.append(f"SKIP {p.relative_to(root)}: frontmatter must be a mapping")
         return None
 
     # If an id is present, it must be a valid one; we refuse to silently fix it.
-    if "id" in fm and (
-        not isinstance(fm["id"], str) or not ID_RE.fullmatch(fm["id"])
-    ):
-        skip_notes.append(
-            f"SKIP {p.relative_to(root)}: existing `id` is not a valid string; "
-            f"fix manually then re-run"
-        )
+    if "id" in fm and (not isinstance(fm["id"], str) or not ID_RE.fullmatch(fm["id"])):
+        skip_notes.append(f"SKIP {p.relative_to(root)}: existing `id` is not a valid string; fix manually then re-run")
         return None
 
     # --- Case B: already fully managed ---
@@ -668,8 +619,7 @@ def _classify_for_adopt(
         proposed_id = _propose_id(p, root)
         if not proposed_id or not ID_RE.fullmatch(proposed_id):
             raise OpError(
-                f"{p.relative_to(root)}: cannot derive a valid id from path "
-                f"(got {proposed_id!r}); add `id` manually"
+                f"{p.relative_to(root)}: cannot derive a valid id from path (got {proposed_id!r}); add `id` manually"
             )
         augmented["id"] = proposed_id
         added.append("id")
@@ -725,14 +675,10 @@ def _propose_id(path: pathlib.Path, root: pathlib.Path) -> str:
         rel_parent = rel.parent
         if str(rel_parent) == ".":
             return "root"
-        return _slugify(
-            str(rel_parent).replace(os.sep, "/").replace("/", "-")
-        )
+        return _slugify(str(rel_parent).replace(os.sep, "/").replace("/", "-"))
     # Other files: slugify the full relative path minus the extension.
     without_ext = rel.with_suffix("")
-    return _slugify(
-        str(without_ext).replace(os.sep, "/").replace("/", "-")
-    )
+    return _slugify(str(without_ext).replace(os.sep, "/").replace("/", "-"))
 
 
 def _slugify(name: str) -> str:
@@ -787,8 +733,8 @@ def _render_augmented(fm: dict, body: str) -> str:
 def _require_under_root(path: pathlib.Path, root: pathlib.Path) -> None:
     try:
         path.relative_to(root)
-    except ValueError:
-        raise OpError(f"{path}: not under tree root {root}")
+    except ValueError as e:
+        raise OpError(f"{path}: not under tree root {root}") from e
 
 
 def _assert_sound(root: pathlib.Path) -> list[Doc]:
@@ -817,9 +763,7 @@ def _in_git_repo(path: pathlib.Path) -> bool:
         return False
 
 
-def _plan_rename(
-    docs: Iterable[Doc], old_id: str, new_id: str
-) -> dict[DocPath, str]:
+def _plan_rename(docs: Iterable[Doc], old_id: str, new_id: str) -> dict[DocPath, str]:
     plan: dict[DocPath, str] = {}
     for d in docs:
         new_content = _rewrite_doc(d, old_id, new_id)
@@ -845,12 +789,8 @@ def _rewrite_doc(d: Doc, old: str, new: str) -> str | None:
                 fm_changed = True
 
     new_body = d.body
-    new_body = re.sub(
-        rf"\[\[id:{re.escape(old)}\]\]", f"[[id:{new}]]", new_body
-    )
-    new_body = re.sub(
-        rf"\[\[see:{re.escape(old)}\]\]", f"[[see:{new}]]", new_body
-    )
+    new_body = re.sub(rf"\[\[id:{re.escape(old)}\]\]", f"[[id:{new}]]", new_body)
+    new_body = re.sub(rf"\[\[see:{re.escape(old)}\]\]", f"[[see:{new}]]", new_body)
     body_changed = new_body != d.body
 
     if not (fm_changed or body_changed):
@@ -860,9 +800,7 @@ def _rewrite_doc(d: Doc, old: str, new: str) -> str | None:
     return f"---\n{fm_yaml}---\n{new_body}"
 
 
-def _apply_plan_in_memory(
-    docs: list[Doc], plan: dict[DocPath, str]
-) -> list[Doc]:
+def _apply_plan_in_memory(docs: list[Doc], plan: dict[DocPath, str]) -> list[Doc]:
     """Return a doc list with the plan applied, re-parsed to confirm roundtrip."""
     out: list[Doc] = []
     for d in docs:
@@ -890,9 +828,7 @@ def _atomic_write(path: pathlib.Path, content: str) -> None:
 
 def _commit(root: pathlib.Path, plan: dict[DocPath, str]) -> None:
     """Write every file in plan atomically, with snapshot-based rollback."""
-    snapshot: dict[DocPath, str] = {
-        rel: (root / rel).read_text() for rel in plan
-    }
+    snapshot: dict[DocPath, str] = {rel: (root / rel).read_text() for rel in plan}
     written: list[DocPath] = []
     try:
         for rel, new_content in plan.items():
@@ -908,8 +844,7 @@ def _commit(root: pathlib.Path, plan: dict[DocPath, str]) -> None:
                 # the list of files that may be inconsistent.
                 pass
         raise OpError(
-            f"commit failed after {len(written)}/{len(plan)} files "
-            f"written; rolled back. original error: {e}"
+            f"commit failed after {len(written)}/{len(plan)} files written; rolled back. original error: {e}"
         ) from e
 
 
@@ -928,9 +863,7 @@ def _commit(root: pathlib.Path, plan: dict[DocPath, str]) -> None:
 _CROC_FRONTMATTER_FIELDS: tuple[str, ...] = ("id", "kind", "links")
 
 
-def molt_tree(
-    root: pathlib.Path, dry_run: bool = False
-) -> list[str]:
+def molt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
     """Reverse adoption.
 
     Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into plain
@@ -944,9 +877,7 @@ def molt_tree(
     root = root.resolve()
     docs = _assert_sound(root)  # pre-check; raises OpError if unsound
     index = build_index(docs)
-    id_to_title: dict[DocId, str] = {
-        d.id: str(d.frontmatter.get("title", d.id)) for d in docs
-    }
+    id_to_title: dict[DocId, str] = {d.id: str(d.frontmatter.get("title", d.id)) for d in docs}
 
     plan: dict[DocPath, str] = {}
     per_file_stats: dict[DocPath, tuple[int, list[str]]] = {}
@@ -954,9 +885,7 @@ def molt_tree(
 
     for d in docs:
         abs_source = root / d.path
-        new_body, refs_rewritten, dangling_weak = _molt_body(
-            d.body, abs_source, root, index, id_to_title
-        )
+        new_body, refs_rewritten, dangling_weak = _molt_body(d.body, abs_source, root, index, id_to_title)
         for ghost_id in dangling_weak:
             skip_notes.append(
                 f"SKIP-MOLT-REF {d.path}: weak ref [[see:{ghost_id}]] "
@@ -1036,9 +965,7 @@ def _molt_body(
         anchor = m.group(2) or ""
         display = m.group(3) or id_to_title.get(target_id, target_id)
         target_abs = root / pathlib.Path(index[target_id])
-        rel = os.path.relpath(target_abs, start=source_dir).replace(
-            os.sep, "/"
-        )
+        rel = os.path.relpath(target_abs, start=source_dir).replace(os.sep, "/")
         suffix = f"#{anchor}" if anchor else ""
         count += 1
         return f"[{display}]({rel}{suffix})"
@@ -1088,14 +1015,8 @@ def _simulate_molt(plan: dict[DocPath, str]) -> None:
             continue
         parts = content.split("---\n", 2)
         if len(parts) < 3:
-            raise OpError(
-                f"molt simulation: {rel_path} would have unterminated "
-                f"frontmatter"
-            )
+            raise OpError(f"molt simulation: {rel_path} would have unterminated frontmatter")
         try:
             yaml.safe_load(parts[1])
         except yaml.YAMLError as e:
-            raise OpError(
-                f"molt simulation: {rel_path} would have invalid YAML "
-                f"frontmatter ({e})"
-            )
+            raise OpError(f"molt simulation: {rel_path} would have invalid YAML frontmatter ({e})") from e
