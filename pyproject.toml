@@ -24,10 +24,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jesse-hartman/croc"
-Source = "https://github.com/jesse-hartman/croc"
-Issues = "https://github.com/jesse-hartman/croc/issues"
-Changelog = "https://github.com/jesse-hartman/croc/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/jesshart/croc"
+Source = "https://github.com/jesshart/croc"
+Issues = "https://github.com/jesshart/croc/issues"
+Changelog = "https://github.com/jesshart/croc/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
