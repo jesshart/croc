@@ -1,5 +1,11 @@
 # croc
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
+> *ids are owners, links are borrows, `croc check` is the borrow checker.*
+
 A Rust-inspired, Typer-powered CLI for reliably managing project documentation.
 
 `croc` treats a markdown doc tree the way Rust treats memory: **ids are owners, links are borrows, `croc check` is the borrow checker, and `croc rename` is an atomic refactor.** Move a file and every reference keeps working. Introduce a dangling link and the commit is refused.
