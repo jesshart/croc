@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local prototypes and agent-memory experiments
+.claude/
+scripts/
+thoughts/
