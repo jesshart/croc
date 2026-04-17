@@ -36,6 +36,7 @@ from croc.check import (
     DocPath,
     ID_RE,
     STRONG_REF,
+    WEAK_REF,
     TreeError,
     build_index,
     check,
@@ -910,3 +911,191 @@ def _commit(root: pathlib.Path, plan: dict[DocPath, str]) -> None:
             f"commit failed after {len(written)}/{len(plan)} files "
             f"written; rolled back. original error: {e}"
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Molt — the inverse of adopt
+# ---------------------------------------------------------------------------
+#
+# `molt_tree` sheds the croc dialect: rewrites `[[id:X]]` body refs back
+# to plain-markdown `[text](path.md)` syntax, strips croc-specific
+# frontmatter fields, and removes `.croc.toml`. Same transactional shape
+# as `rename_id`.
+
+# Croc-specific frontmatter fields. `init --adopt` writes these; `molt`
+# strips them. Every other key (title, type, mirrors, created, custom
+# stuff) is preserved verbatim in its original order.
+_CROC_FRONTMATTER_FIELDS: tuple[str, ...] = ("id", "kind", "links")
+
+
+def molt_tree(
+    root: pathlib.Path, dry_run: bool = False
+) -> list[str]:
+    """Reverse adoption.
+
+    Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into plain
+    `[text](path.md[#anchor])` markdown, strips `id`/`kind`/`links` from
+    frontmatter (preserving every other key), removes empty-after-strip
+    frontmatter blocks entirely, and deletes `.croc.toml`.
+
+    The tree must pass `check` first — same pre-condition as `rename`.
+    `dry_run=True` runs validation and planning but writes nothing.
+    """
+    root = root.resolve()
+    docs = _assert_sound(root)  # pre-check; raises OpError if unsound
+    index = build_index(docs)
+    id_to_title: dict[DocId, str] = {
+        d.id: str(d.frontmatter.get("title", d.id)) for d in docs
+    }
+
+    plan: dict[DocPath, str] = {}
+    per_file_stats: dict[DocPath, tuple[int, list[str]]] = {}
+    skip_notes: list[str] = []
+
+    for d in docs:
+        abs_source = root / d.path
+        new_body, refs_rewritten, dangling_weak = _molt_body(
+            d.body, abs_source, root, index, id_to_title
+        )
+        for ghost_id in dangling_weak:
+            skip_notes.append(
+                f"SKIP-MOLT-REF {d.path}: weak ref [[see:{ghost_id}]] "
+                f"points to no managed doc; left as-is (no path to rewrite to)"
+            )
+        new_fm, stripped_fields = _molt_frontmatter(d.frontmatter)
+        new_content = _render_molted(new_fm, new_body)
+        current = abs_source.read_text()
+        if new_content != current:
+            plan[d.path] = new_content
+            per_file_stats[d.path] = (refs_rewritten, stripped_fields)
+
+    marker = root / ".croc.toml"
+    remove_marker = marker.exists()
+
+    _simulate_molt(plan)  # raises OpError if any planned output is malformed
+
+    actions: list[str] = list(skip_notes)
+    for rel_path in sorted(plan):
+        rw, stripped = per_file_stats[rel_path]
+        parts: list[str] = []
+        if rw:
+            parts.append(f"rewrote {rw} ref{'s' if rw != 1 else ''}")
+        if stripped:
+            parts.append(f"stripped {', '.join(stripped)}")
+        actions.append(f"MOLT {rel_path} ({'; '.join(parts)})")
+    if remove_marker:
+        actions.append(f"REMOVE {marker.relative_to(root)}")
+
+    if dry_run:
+        return actions
+
+    if plan:
+        _commit(root, plan)
+    if remove_marker:
+        marker.unlink()
+    return actions
+
+
+def _molt_body(
+    body: str,
+    source_abs_path: pathlib.Path,
+    root: pathlib.Path,
+    index: dict[DocId, DocPath],
+    id_to_title: dict[DocId, str],
+) -> tuple[str, int, list[str]]:
+    """Rewrite every `[[id:X]]` / `[[see:X]]` ref in `body` to plain
+    markdown `[display](relative/path.md[#anchor])`.
+
+    Returns (new_body, refs_rewritten, dangling_weak_ids).
+
+    Bare refs (no `|display`) fall back to the target's frontmatter
+    `title`; if the target has no title, the id itself is used. Paths
+    are normalized to forward slashes so molted output is portable
+    across OS.
+
+    Weak refs to absent targets are intentionally tolerated by croc
+    (that's the whole `Weak<T>` design). During molt they have no
+    target path to rewrite to, so we leave the original `[[see:X]]`
+    in place and record the id in the returned dangling list — molt
+    surfaces these as SKIP-MOLT-REF notes rather than forging a path
+    that never existed. Strong refs can't legally be dangling (the
+    pre-check rejects those trees); we defensively leave those in
+    place too rather than crash.
+    """
+    count = 0
+    dangling_weak: list[str] = []
+    source_dir = source_abs_path.parent
+
+    def _replace(m: re.Match, *, strong: bool) -> str:
+        nonlocal count
+        target_id = DocId(m.group(1))
+        if target_id not in index:
+            if not strong:
+                dangling_weak.append(target_id)
+            return m.group(0)
+        anchor = m.group(2) or ""
+        display = m.group(3) or id_to_title.get(target_id, target_id)
+        target_abs = root / pathlib.Path(index[target_id])
+        rel = os.path.relpath(target_abs, start=source_dir).replace(
+            os.sep, "/"
+        )
+        suffix = f"#{anchor}" if anchor else ""
+        count += 1
+        return f"[{display}]({rel}{suffix})"
+
+    body = STRONG_REF.sub(lambda m: _replace(m, strong=True), body)
+    body = WEAK_REF.sub(lambda m: _replace(m, strong=False), body)
+    return body, count, dangling_weak
+
+
+def _molt_frontmatter(fm: dict) -> tuple[dict | None, list[str]]:
+    """Strip croc-specific fields from `fm`.
+
+    Returns (new_fm, stripped_field_names). `new_fm is None` when the
+    resulting mapping would be empty — callers then omit the frontmatter
+    block entirely, so the molted file reads as untouched plain markdown.
+    """
+    stripped = [f for f in _CROC_FRONTMATTER_FIELDS if f in fm]
+    new_fm = {k: v for k, v in fm.items() if k not in _CROC_FRONTMATTER_FIELDS}
+    if not new_fm:
+        return None, stripped
+    return new_fm, stripped
+
+
+def _render_molted(fm: dict | None, body: str) -> str:
+    """Recombine frontmatter + body for a molted file.
+
+    When `fm is None`, the frontmatter block is omitted entirely. The
+    leading newline that `parse_frontmatter` preserved from the original
+    file's blank-line separator is trimmed, so the molted file doesn't
+    open with an extraneous `\\n`.
+    """
+    if fm is None:
+        return body.lstrip("\n")
+    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
+    return f"---\n{fm_yaml}---\n{body}"
+
+
+def _simulate_molt(plan: dict[DocPath, str]) -> None:
+    """Verify every planned molted file is syntactically sound.
+
+    Checks: balanced frontmatter delimiters if any, YAML parseable if
+    a frontmatter block remains. Raises OpError on violation — molt
+    refuses to write a file it can't verify.
+    """
+    for rel_path, content in plan.items():
+        if not content.startswith("---\n"):
+            continue
+        parts = content.split("---\n", 2)
+        if len(parts) < 3:
+            raise OpError(
+                f"molt simulation: {rel_path} would have unterminated "
+                f"frontmatter"
+            )
+        try:
+            yaml.safe_load(parts[1])
+        except yaml.YAMLError as e:
+            raise OpError(
+                f"molt simulation: {rel_path} would have invalid YAML "
+                f"frontmatter ({e})"
+            )

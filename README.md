@@ -108,6 +108,18 @@ Proposed ids are **hierarchical** — slugified relative path, not just the file
 
 Collisions (rare path-slug ambiguities, or `foo.md` at root competing with `foo/self.md`) are reported and the command refuses to write.
 
+### `croc molt <root> [--dry-run]`
+
+Reverse adoption. Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into `[text](path.md)` plain markdown, strips croc-specific frontmatter fields (`id`, `kind`, `links`), and removes `.croc.toml`. The tree must pass `croc check` first.
+
+| Before                                    | After                                |
+| ----------------------------------------- | ------------------------------------ |
+| `[[id:foo\|foo]]`                          | `[foo](foo.md)`                      |
+| `[[id:target#section-x\|Section X]]`       | `[Section X](target.md#section-x)`   |
+| `[[id:data-glossary]]` (bare)              | `[Data Glossary](data-glossary.md)` (falls back to target's `title`) |
+
+Foreign frontmatter (`title`, `type`, `mirrors`, any custom keys) is preserved in original order. The molted tree renders correctly in GitHub, Obsidian, or any generic markdown tool. Re-adopt with `croc init --adopt` to come back under croc management; the round-trip is semantically equivalent.
+
 ### `croc refs <root> [--unresolved]`
 
 Walks the tree and reports every markdown-style path ref (`[text](path.md)`), showing whether each target resolves to a file under the root. Read-only; works on any markdown tree whether or not it's been adopted. Use as a health check before `init --adopt --migrate-refs`:

@@ -42,13 +42,15 @@ ID_RE = re.compile(rf"^{ID_CHARS}$")
 #   [[id:X#anchor]]
 #   [[id:X|display text]]
 #   [[id:X#anchor|display text]]
-# Only the id (group 1) is captured; anchor and display are consumed but
-# discarded, so the checker's invariants depend only on the id.
+# Capturing groups: (1) id, (2) anchor or None, (3) display or None.
+# The checker still depends only on group(1); the extra groups exist so
+# `molt` can reconstruct faithful plain-markdown output without re-
+# parsing the ref.
 STRONG_REF = re.compile(
-    rf"\[\[id:({ID_CHARS})(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]"
+    rf"\[\[id:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]"
 )
 WEAK_REF = re.compile(
-    rf"\[\[see:({ID_CHARS})(?:#[^|\]]+)?(?:\|[^\]]+)?\]\]"
+    rf"\[\[see:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]"
 )
 
 

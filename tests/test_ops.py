@@ -6,15 +6,19 @@ import hashlib
 import pathlib
 
 import pytest
+import yaml
 
 from croc.check import check, load_tree, parse_frontmatter
 from croc.ops import (
     OpError,
+    _molt_body,
+    _molt_frontmatter,
     _propose_id,
     _slugify,
     _title_from_stem,
     adopt_tree,
     init_tree,
+    molt_tree,
     move_file,
     rename_id,
     scan_path_refs,
@@ -999,3 +1003,370 @@ def test_slugify(stem, expected):
 )
 def test_title_from_stem(stem, expected):
     assert _title_from_stem(stem) == expected
+
+
+# ---------------------------------------------------------------------------
+# molt — reverse of adopt
+# ---------------------------------------------------------------------------
+
+
+class TestMolt:
+    """molt_tree rewrites the croc dialect back to plain markdown."""
+
+    def test_basic_refs_rewritten(self, sample_tree):
+        actions = molt_tree(sample_tree)
+        self_content = (sample_tree / "design/self.md").read_text()
+        # [[id:registry|...]] became [...](../patterns/registry.md)
+        assert "[[id:" not in self_content
+        assert "[[see:" not in self_content
+        assert "[[id:registry|" not in self_content
+        # One MOLT action per changed file, plus REMOVE for the marker
+        assert any("MOLT design/self.md" in a for a in actions)
+
+    def test_anchor_preserved(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="See [[id:target#section-x|the section]].",
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "[the section](target.md#section-x)" in content
+
+    def test_display_text_preserved(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target", title="Target Doc")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="See [[id:target|the custom display]].",
+        )
+        molt_tree(tmp_path)
+        assert "[the custom display](target.md)" in (
+            tmp_path / "src.md"
+        ).read_text()
+
+    def test_bare_ref_falls_back_to_target_title(self, tmp_path, write_doc):
+        """Bare `[[id:X]]` (no display) uses target's `title` field."""
+        write_doc(tmp_path, "target.md", "target", title="The Target Doc")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="See [[id:target]].",
+        )
+        molt_tree(tmp_path)
+        assert "[The Target Doc](target.md)" in (
+            tmp_path / "src.md"
+        ).read_text()
+
+    def test_weak_ref_rewritten_to_plain_link(self, tmp_path, write_doc):
+        """Weak refs become plain markdown links — the strong/weak
+        distinction is intentionally lossy on molt."""
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "weak"}],
+            body="See [[see:target|also]].",
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "[also](target.md)" in content
+        assert "[[see:" not in content
+
+    def test_cross_directory_relative_paths(self, tmp_path, write_doc):
+        """Nested source → parent-dir target produces `../target.md`."""
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path, "sub/src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="See [[id:target|up]].",
+        )
+        molt_tree(tmp_path)
+        assert "[up](../target.md)" in (
+            tmp_path / "sub/src.md"
+        ).read_text()
+
+    def test_deeply_nested_relative_paths(self, tmp_path, write_doc):
+        write_doc(tmp_path, "a/b/c/target.md", "target", title="Target")
+        write_doc(
+            tmp_path, "x/y/src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="[[id:target|t]]",
+        )
+        molt_tree(tmp_path)
+        # From x/y/ to a/b/c/: ../../a/b/c/target.md
+        assert "[t](../../a/b/c/target.md)" in (
+            tmp_path / "x/y/src.md"
+        ).read_text()
+
+    def test_paths_use_forward_slashes(self, tmp_path, write_doc):
+        """Output must use `/` even on Windows-style OSes (markdown portability)."""
+        write_doc(tmp_path, "sub/target.md", "target", title="t")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="[[id:target|t]]",
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "sub/target.md" in content
+        assert "sub\\target.md" not in content
+
+    def test_frontmatter_strips_croc_fields(self, sample_tree):
+        molt_tree(sample_tree)
+        # Every molted file has no id/kind/links
+        for p in sample_tree.rglob("*.md"):
+            text = p.read_text()
+            if text.startswith("---\n"):
+                parts = text.split("---\n", 2)
+                fm = yaml.safe_load(parts[1]) or {}
+                assert "id" not in fm
+                assert "kind" not in fm
+                assert "links" not in fm
+
+    def test_frontmatter_preserves_title(self, tmp_path, write_doc):
+        write_doc(tmp_path, "t.md", "t", title="My Title")
+        molt_tree(tmp_path)
+        text = (tmp_path / "t.md").read_text()
+        assert text.startswith("---\n")
+        parts = text.split("---\n", 2)
+        fm = yaml.safe_load(parts[1])
+        assert fm == {"title": "My Title"}
+
+    def test_frontmatter_preserves_foreign_fields_in_order(self, tmp_path):
+        (tmp_path / "x.md").write_text(
+            "---\n"
+            "type: directory-index\n"
+            "mirrors:\n  - a\n  - b\n"
+            'created: "2024-01-01"\n'
+            "id: x\n"
+            "title: X\n"
+            "kind: leaf\n"
+            "links: []\n"
+            "---\n\n# X\n"
+        )
+        molt_tree(tmp_path)
+        text = (tmp_path / "x.md").read_text()
+        fm = yaml.safe_load(text.split("---\n", 2)[1])
+        # Croc fields stripped, foreign ordered fields survive
+        assert list(fm.keys()) == ["type", "mirrors", "created", "title"]
+        assert fm["type"] == "directory-index"
+        assert fm["mirrors"] == ["a", "b"]
+
+    # NOTE: the "frontmatter block removed entirely" case is tested via
+    # the `_molt_frontmatter` helper below (returns None when nothing
+    # remains). A valid croc tree always has `title`, so this branch
+    # can't be reached end-to-end through `molt_tree` without a tree
+    # that already fails `check` — which molt refuses on principle.
+
+    def test_croc_toml_removed(self, tmp_path, write_doc):
+        write_doc(tmp_path, "x.md", "x")
+        (tmp_path / ".croc.toml").write_text('version = "0.1"\n')
+        actions = molt_tree(tmp_path)
+        assert not (tmp_path / ".croc.toml").exists()
+        assert any("REMOVE .croc.toml" in a for a in actions)
+
+    def test_no_croc_toml_no_remove_action(self, tmp_path, write_doc):
+        """If there's no marker, molt doesn't emit a REMOVE action."""
+        write_doc(tmp_path, "x.md", "x")
+        actions = molt_tree(tmp_path)
+        assert not any("REMOVE" in a for a in actions)
+
+    def test_refuses_on_broken_tree(self, sample_tree):
+        """Can't molt an unsound tree — same precondition as rename."""
+        (sample_tree / "broken.md").write_text(
+            "---\nid: broken\ntitle: t\nkind: leaf\n"
+            "links:\n  - {to: ghost, strength: strong}\n---\n[[id:ghost]]\n"
+        )
+        with pytest.raises(OpError, match="not sound"):
+            molt_tree(sample_tree)
+
+    def test_dry_run_writes_nothing(self, sample_tree):
+        before = _tree_fingerprint(sample_tree)
+        marker = sample_tree / ".croc.toml"
+        marker.write_text('version = "0.1"\n')
+        before = _tree_fingerprint(sample_tree)
+        actions = molt_tree(sample_tree, dry_run=True)
+        assert actions  # non-empty plan
+        # Nothing on disk changed, including the marker
+        assert _tree_fingerprint(sample_tree) == before
+        assert marker.exists()
+
+    def test_post_molt_no_id_refs_remain(self, sample_tree):
+        """The whole point: zero croc dialect survives a molt."""
+        molt_tree(sample_tree)
+        for p in sample_tree.rglob("*.md"):
+            text = p.read_text()
+            assert "[[id:" not in text
+            assert "[[see:" not in text
+
+    def test_post_molt_all_path_refs_resolve(self, sample_tree):
+        molt_tree(sample_tree)
+        reports = scan_path_refs(sample_tree)
+        assert reports  # the tree should have refs
+        unresolved = [r for r in reports if not r.resolved]
+        assert unresolved == []
+
+    def test_adopt_molt_roundtrip_semantic_equivalence(self, tmp_path):
+        """Build a plain markdown tree, adopt, molt, and compare
+        the post-molt content to the pre-adopt content for the pieces
+        where equivalence is verifiable."""
+        (tmp_path / "target.md").write_text("# Target content\n")
+        (tmp_path / "src.md").write_text(
+            "# Source\n\nSee [target](target.md).\n"
+        )
+        original_src = (tmp_path / "src.md").read_text()
+        original_target = (tmp_path / "target.md").read_text()
+
+        adopt_tree(tmp_path)       # dialect + frontmatter added
+        molt_tree(tmp_path)        # dialect + frontmatter removed
+
+        # After the round-trip, the body link text and path form match
+        # (modulo the file acquiring and losing a `title: Src` frontmatter,
+        # which molt preserves — so we check body substring).
+        new_src = (tmp_path / "src.md").read_text()
+        new_target = (tmp_path / "target.md").read_text()
+        assert "[target](target.md)" in new_src
+        assert "# Target content" in new_target
+        # Marker should be gone too
+        assert not (tmp_path / ".croc.toml").exists()
+
+    def test_unmanaged_files_untouched_on_error(self, tmp_path, write_doc):
+        """A tree with a non-croc .md file can't pass `check`, so molt
+        refuses — the unmanaged file stays untouched, as expected."""
+        write_doc(tmp_path, "managed.md", "managed")
+        (tmp_path / "plain.md").write_text("# Not managed")
+        with pytest.raises(OpError):
+            molt_tree(tmp_path)
+        assert (tmp_path / "plain.md").read_text() == "# Not managed"
+
+    def test_weak_ref_to_missing_target_does_not_crash(self, tmp_path, write_doc):
+        """Weak refs to absent targets are legal by design (Rule 3/4
+        exemption). Molt must not KeyError — it should leave the ref
+        in place and surface a SKIP-MOLT-REF note."""
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "ghost", "strength": "weak"}],
+            body="Aspirational link: [[see:ghost|future doc]].",
+        )
+        # Tree is sound — weak refs are allowed to dangle
+        actions = molt_tree(tmp_path)
+        # Ref left as-is; molt did not forge a fake path
+        content = (tmp_path / "src.md").read_text()
+        assert "[[see:ghost|future doc]]" in content
+        assert "(ghost.md)" not in content  # no forged path
+        # SKIP-MOLT-REF note emitted
+        assert any(a.startswith("SKIP-MOLT-REF") for a in actions)
+        assert any("ghost" in a for a in actions)
+
+    def test_weak_ref_to_missing_bare_form(self, tmp_path, write_doc):
+        """Bare `[[see:X]]` (no display) with missing target — same policy."""
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "ghost", "strength": "weak"}],
+            body="See [[see:ghost]].",
+        )
+        actions = molt_tree(tmp_path)
+        assert "[[see:ghost]]" in (tmp_path / "src.md").read_text()
+        assert any(a.startswith("SKIP-MOLT-REF") for a in actions)
+
+    def test_mixed_resolvable_and_dangling_weak_refs_in_one_file(
+        self, tmp_path, write_doc
+    ):
+        """A file with both kinds: resolvable refs get rewritten; the
+        dangling weak ref stays put; both are reflected in the log."""
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[
+                {"to": "target", "strength": "strong"},
+                {"to": "ghost", "strength": "weak"},
+            ],
+            body="See [[id:target|the target]] and maybe [[see:ghost]].",
+        )
+        actions = molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "[the target](target.md)" in content  # resolvable → rewritten
+        assert "[[see:ghost]]" in content            # dangling → preserved
+        # Action log shows both the MOLT (for the rewrite) and the SKIP-MOLT-REF
+        assert any("MOLT src.md" in a and "rewrote 1 ref" in a for a in actions)
+        assert any(a.startswith("SKIP-MOLT-REF") and "ghost" in a for a in actions)
+
+    def test_dry_run_surfaces_dangling_weak_refs_in_plan(
+        self, tmp_path, write_doc
+    ):
+        """Users must see dangling weak refs during dry-run — discovering
+        leaked croc syntax at write time would be a nasty surprise."""
+        write_doc(
+            tmp_path, "src.md", "src",
+            links=[{"to": "ghost", "strength": "weak"}],
+            body="[[see:ghost|future]]",
+        )
+        before = _tree_fingerprint(tmp_path)
+        actions = molt_tree(tmp_path, dry_run=True)
+        assert _tree_fingerprint(tmp_path) == before  # nothing written
+        assert any(a.startswith("SKIP-MOLT-REF") for a in actions)
+
+
+class TestMoltHelpers:
+    """Isolated helpers for precise assertions."""
+
+    def test_molt_frontmatter_strips_only_croc_fields(self):
+        fm, stripped = _molt_frontmatter(
+            {"id": "x", "title": "T", "kind": "leaf", "links": [], "type": "foo"}
+        )
+        assert fm == {"title": "T", "type": "foo"}
+        assert stripped == ["id", "kind", "links"]
+
+    def test_molt_frontmatter_returns_none_when_empty(self):
+        fm, stripped = _molt_frontmatter(
+            {"id": "x", "kind": "leaf", "links": []}
+        )
+        assert fm is None
+        assert stripped == ["id", "kind", "links"]
+
+    def test_molt_frontmatter_preserves_insertion_order(self):
+        fm, _ = _molt_frontmatter(
+            {"type": "a", "id": "x", "mirrors": [1], "title": "T", "links": []}
+        )
+        assert list(fm.keys()) == ["type", "mirrors", "title"]
+
+
+class TestRefRegexCaptureGroups:
+    """Phase 1: regex must expose id/anchor/display as groups 1/2/3."""
+
+    def test_bare_ref_captures_only_id(self):
+        from croc.check import STRONG_REF
+        m = STRONG_REF.search("text [[id:foo]] more")
+        assert m is not None
+        assert m.group(1) == "foo"
+        assert m.group(2) is None
+        assert m.group(3) is None
+
+    def test_ref_with_anchor_only(self):
+        from croc.check import STRONG_REF
+        m = STRONG_REF.search("[[id:foo#section]]")
+        assert m.group(1) == "foo"
+        assert m.group(2) == "section"
+        assert m.group(3) is None
+
+    def test_ref_with_display_only(self):
+        from croc.check import STRONG_REF
+        m = STRONG_REF.search("[[id:foo|Display]]")
+        assert m.group(1) == "foo"
+        assert m.group(2) is None
+        assert m.group(3) == "Display"
+
+    def test_ref_with_anchor_and_display(self):
+        from croc.check import STRONG_REF
+        m = STRONG_REF.search("[[id:foo#sec|Display]]")
+        assert m.group(1) == "foo"
+        assert m.group(2) == "sec"
+        assert m.group(3) == "Display"
+
+    def test_weak_ref_same_group_layout(self):
+        from croc.check import WEAK_REF
+        m = WEAK_REF.search("[[see:foo#sec|D]]")
+        assert m.group(1) == "foo"
+        assert m.group(2) == "sec"
+        assert m.group(3) == "D"

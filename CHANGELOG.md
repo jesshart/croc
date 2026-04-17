@@ -22,6 +22,13 @@ pre-1.0 and does not yet commit to semver.
 
 ### Added
 
+- **`croc molt <root>`** — reverse adoption. Rewrites `[[id:X]]` /
+  `[[see:X]]` body refs back to plain-markdown `[text](path.md)` syntax,
+  strips croc-specific frontmatter fields (`id`, `kind`, `links`), and
+  removes `.croc.toml`. Transactional: pre-checks the tree, simulates
+  the rewrite in memory, writes atomically — same skeleton as `rename`.
+  Supports `--dry-run`. The tree must pass `croc check` first.
+
 - **Re-running `init --adopt` reaches already-managed files.** If a
   managed file's body gains a new markdown path-ref after first
   adoption, the next `init --adopt` run creates a MIGRATE-only plan

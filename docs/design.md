@@ -72,6 +72,7 @@ Shipped:
 | `croc move`    | Relocate a file. IDs travel with the file; no refs rewritten.   |
 | `croc rename`  | Rename an id. Every strong and weak reference rewritten atomically, validate-then-commit. |
 | `croc init`    | Create `.croc.toml`. With `--adopt`, scaffold/augment frontmatter and migrate markdown path refs to the croc dialect (default on; `--no-migrate-refs` opts out). Idempotent on re-run. |
+| `croc molt`    | Reverse adoption. Rewrites `[[id:X]]` body refs back to plain markdown, strips croc-specific frontmatter fields, removes `.croc.toml`. Transactional; requires `check` to pass first. |
 | `croc refs`    | Report markdown-style path refs across the tree and whether they resolve. Read-only. |
 
 Every mutating command (`move`, `rename`, `init --adopt`) accepts

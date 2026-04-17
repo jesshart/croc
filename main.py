@@ -13,6 +13,7 @@ from croc.ops import (
     OpError,
     adopt_tree,
     init_tree,
+    molt_tree,
     move_file,
     rename_id,
     scan_path_refs,
@@ -167,6 +168,41 @@ def init_cmd(
         typer.echo(f"(dry-run: {n} action{plural}; nothing written)")
     else:
         typer.echo(f"init OK ({n} action{plural})")
+
+
+@app.command("molt")
+def molt_cmd(
+    root: pathlib.Path = typer.Argument(
+        pathlib.Path("."), help="Tree root."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Preview actions; do not write.",
+    ),
+) -> None:
+    """Reverse croc adoption.
+
+    Rewrites id-based body refs back to plain markdown links, strips
+    croc-specific frontmatter fields, and removes `.croc.toml`. The
+    tree must pass `croc check` first. See README for the full syntax
+    mapping.
+    """
+    try:
+        actions = molt_tree(root, dry_run=dry_run)
+    except OpError as e:
+        typer.echo(f"molt FAILED: {e}", err=True)
+        raise typer.Exit(code=1)
+
+    for a in actions:
+        prefix = "would " if dry_run else ""
+        typer.echo(f"{prefix}{a}")
+
+    n = len(actions)
+    plural = "" if n == 1 else "s"
+    if dry_run:
+        typer.echo(f"(dry-run: {n} action{plural}; nothing written)")
+    else:
+        typer.echo(f"molt OK ({n} action{plural})")
 
 
 @app.command("refs")
