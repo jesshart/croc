@@ -52,7 +52,10 @@ class OpError(Exception):
 
 
 def move_file(
-    root: pathlib.Path, src: pathlib.Path, dst: pathlib.Path
+    root: pathlib.Path,
+    src: pathlib.Path,
+    dst: pathlib.Path,
+    dry_run: bool = False,
 ) -> pathlib.Path:
     """Relocate a file on disk.
 
@@ -62,6 +65,7 @@ def move_file(
     re-validate what the design already guarantees).
 
     Still runs the pre-check: refusing to pile a move on a broken tree.
+    `dry_run=True` performs every check but skips the actual move.
     """
     root = root.resolve()
     src = src.resolve()
@@ -83,6 +87,9 @@ def move_file(
 
     _assert_sound(root)
 
+    if dry_run:
+        return dst
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     if _in_git_repo(root):
         result = subprocess.run(
@@ -99,11 +106,15 @@ def move_file(
 
 
 def rename_id(
-    root: pathlib.Path, old_id: str, new_id: str
+    root: pathlib.Path,
+    old_id: str,
+    new_id: str,
+    dry_run: bool = False,
 ) -> list[DocPath]:
     """Rename a doc's id. Rewrites every referrer atomically.
 
-    Returns the list of paths that were modified.
+    Returns the list of paths that were (or would be) modified.
+    `dry_run=True` runs validate-plan-simulate but skips commit.
     """
     root = root.resolve()
 
@@ -135,10 +146,147 @@ def rename_id(
         msg = "rewrite would break invariants:\n  " + "\n  ".join(sim_errors)
         raise OpError(msg)
 
-    # Commit: atomic per-file write, with cross-file rollback on FS failure.
-    _commit(root, plan)
+    if not dry_run:
+        _commit(root, plan)
 
     return sorted(plan.keys())
+
+
+# ---------------------------------------------------------------------------
+# Initialization / adoption
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CROC_TOML = """\
+# croc tree root marker.
+version = "0.1"
+"""
+
+
+def init_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
+    """Create `.croc.toml` at `root`. Returns action log.
+
+    Idempotent: returns empty list (no-op) if the marker already exists,
+    so `init --adopt` can run on a partially-initialized tree.
+    """
+    root = root.resolve()
+    marker = root / ".croc.toml"
+
+    if marker.exists():
+        return []
+
+    action = f"CREATE {marker.relative_to(root) if marker.is_relative_to(root) else marker}"
+    if dry_run:
+        return [action]
+
+    root.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_DEFAULT_CROC_TOML)
+    return [action]
+
+
+def adopt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
+    """Scaffold frontmatter into every `.md` under `root` that lacks it.
+
+    - Files starting with `---\\n` are left alone (treated as managed already).
+    - Files without any frontmatter get a minimal scaffold with a slugified id.
+    - All proposed ids are validated for uniqueness against each other and
+      against any existing managed files; collisions abort with a clear list.
+    """
+    root = root.resolve()
+    if not root.is_dir():
+        raise OpError(f"{root}: not a directory")
+
+    # Phase 1: scan. Collect (a) existing ids from already-managed files,
+    # (b) plan of scaffolds for unmanaged files, (c) skips for malformed ones.
+    existing_ids: dict[str, pathlib.Path] = {}
+    plan: dict[pathlib.Path, tuple[str, str]] = {}  # abs_path -> (new_content, proposed_id)
+    skip_notes: list[str] = []
+
+    for p in sorted(root.rglob("*.md")):
+        raw = p.read_text()
+        if raw.startswith("---\n"):
+            try:
+                fm, _ = parse_frontmatter(p, raw)
+                existing_ids[fm["id"]] = p
+            except TreeError as e:
+                skip_notes.append(
+                    f"SKIP {p.relative_to(root)}: malformed frontmatter "
+                    f"({str(e).split(':', 1)[-1].strip()})"
+                )
+            continue
+
+        proposed_id = _slugify(p.stem)
+        if not proposed_id or not ID_RE.fullmatch(proposed_id):
+            raise OpError(
+                f"{p.relative_to(root)}: cannot derive a valid id from "
+                f"filename; rename the file or add frontmatter manually"
+            )
+        kind = "self" if p.name == "self.md" else "leaf"
+        title = _title_from_stem(p.stem)
+        new_content = _scaffold_content(proposed_id, title, kind, raw)
+        plan[p] = (new_content, proposed_id)
+
+    # Phase 2: collision detection. Check proposed ids against existing ids
+    # and against each other.
+    collisions: list[str] = []
+    seen_proposed: dict[str, pathlib.Path] = {}
+    for p, (_, pid) in plan.items():
+        if pid in existing_ids:
+            collisions.append(
+                f"{p.relative_to(root)}: proposed id {pid!r} is already used "
+                f"by {existing_ids[pid].relative_to(root)}"
+            )
+        elif pid in seen_proposed:
+            collisions.append(
+                f"{p.relative_to(root)} and "
+                f"{seen_proposed[pid].relative_to(root)} both slugify to {pid!r}"
+            )
+        else:
+            seen_proposed[pid] = p
+
+    if collisions:
+        raise OpError(
+            "id collisions detected; resolve by renaming files:\n  "
+            + "\n  ".join(collisions)
+        )
+
+    actions = list(skip_notes)
+    for p, (_, pid) in plan.items():
+        actions.append(f"SCAFFOLD {p.relative_to(root)} (id: {pid})")
+
+    if dry_run:
+        return actions
+
+    # Phase 3: commit. Atomic per-file, no snapshot needed because we're
+    # only touching files that had no frontmatter — body content is preserved
+    # verbatim inside the scaffold, so the "rollback" of a bad write is to
+    # re-run the command.
+    for p, (new_content, _) in plan.items():
+        _atomic_write(p, new_content)
+
+    return actions
+
+
+def _slugify(name: str) -> str:
+    """Filename stem → lowercase alphanumeric-and-hyphen id."""
+    s = name.lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    return s.strip("-")
+
+
+def _title_from_stem(stem: str) -> str:
+    """Filename stem → Title Case display string."""
+    words = re.sub(r"[^A-Za-z0-9]+", " ", stem).split()
+    return " ".join(w.capitalize() for w in words) or stem
+
+
+def _scaffold_content(id_: str, title: str, kind: str, original_body: str) -> str:
+    """Produce a full markdown file with scaffolded frontmatter + original body."""
+    fm = {"id": id_, "title": title, "kind": kind, "links": []}
+    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=False)
+    body = original_body
+    if body and not body.startswith("\n"):
+        body = "\n" + body
+    return f"---\n{fm_yaml}---\n{body}"
 
 
 # ---------------------------------------------------------------------------

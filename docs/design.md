@@ -61,19 +61,39 @@ regenerates the full index in milliseconds. This matters:
 - **Trivial backup.** The source of truth is the files themselves;
   lose the index, rebuild it.
 
-## Commands (current and planned)
+## Commands
 
-| Command       | Status  | What it does                                |
-| ------------- | ------- | ------------------------------------------- |
-| `croc check`  | ✅ done | Run the five-rule borrow checker.           |
-| `croc index`  | ✅ done | Print the derived id → path index as JSON.  |
-| `croc move`   | 🚧 stub | Atomic move: `git mv` + re-verify.          |
-| `croc refs`   | 📋 todo | Reverse index — "who points at this doc?"   |
-| `croc gc`     | 📋 todo | Report docs with zero inbound strong links. |
-| `croc schema` | 📋 todo | Externalize the frontmatter schema.         |
+Shipped:
+
+| Command        | What it does                                                    |
+| -------------- | --------------------------------------------------------------- |
+| `croc check`   | Run the five-rule borrow checker.                               |
+| `croc index`   | Print the derived id → path index as JSON.                      |
+| `croc move`    | Relocate a file. IDs travel with the file; no refs rewritten.   |
+| `croc rename`  | Rename an id. Every strong and weak reference rewritten atomically, validate-then-commit. |
+| `croc init`    | Create `.croc.toml`. With `--adopt`, scaffold frontmatter into every `.md` that lacks it. |
+
+Every mutating command (`move`, `rename`, `init --adopt`) accepts
+`--dry-run`, which runs all validation and prints the plan without
+writing.
+
+Planned:
+
+| Command        | What it would do                                                |
+| -------------- | --------------------------------------------------------------- |
+| `croc refs`    | Reverse index — "who points at this doc?"                       |
+| `croc gc`      | Report docs with zero inbound strong links.                     |
+| `croc schema`  | Externalize the frontmatter schema.                             |
 
 ## The guarantee
 
 Wire `croc check` to a `pre-commit` hook and **every commit on `HEAD`
-is a tree in which no doc can produce a broken link**. Reorganization
-becomes cheap; the system refuses to be broken.
+is a tree in which no doc can produce a broken link**.
+
+`croc rename` extends that guarantee into refactors: because the
+rewrite is simulated in memory and re-checked before any disk write,
+a rename either completes soundly or leaves the tree untouched. There
+is no half-renamed intermediate state to commit by accident.
+
+Together: reorganization becomes cheap, refactoring becomes safe, and
+the system refuses to be broken.
