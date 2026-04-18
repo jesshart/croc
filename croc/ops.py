@@ -61,6 +61,30 @@ def _case_mismatch_ext(rel_path: str) -> bool:
     return rel_path.endswith((".MD", ".Md", ".mD"))
 
 
+def _dump_yaml(fm: dict) -> str:
+    """Serialize frontmatter for file emission.
+
+    Forces block style everywhere (`default_flow_style=False`). PyYAML's
+    default `None` uses a "short-enough" heuristic that collapses things
+    like `{title: X}` or `- {to: Y, strength: strong}` to flow style —
+    valid YAML but ugly to diff and read in a docs tree. Block-only is
+    what humans expect, matches the style `init --adopt` scaffolds, and
+    avoids the `!!timestamp` tag that PyYAML emits for datetime scalars
+    in flow contexts.
+
+    Width is effectively disabled so long inline values (paths, URLs,
+    prose titles) don't wrap mid-value. Unicode passes through
+    unescaped.
+    """
+    return yaml.dump(
+        fm,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+        width=1000,
+    )
+
+
 class OpError(Exception):
     """An operation cannot proceed (pre-condition failure or commit failure)."""
 
@@ -387,7 +411,7 @@ def _migrate_refs_in_plan(
                 new_links.append({"to": mid, "strength": "strong"})
             fm["links"] = new_links
 
-        fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
+        fm_yaml = _dump_yaml(fm)
         entry.new_content = f"---\n{fm_yaml}---\n{new_body}"
 
 
@@ -708,7 +732,7 @@ def _propose_title(path: pathlib.Path, root: pathlib.Path) -> str:
 def _scaffold_content(id_: str, title: str, kind: str, original_body: str) -> str:
     """Produce a full markdown file with scaffolded frontmatter + original body."""
     fm = {"id": id_, "title": title, "kind": kind, "links": []}
-    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
+    fm_yaml = _dump_yaml(fm)
     body = original_body
     if body and not body.startswith("\n"):
         body = "\n" + body
@@ -721,7 +745,7 @@ def _render_augmented(fm: dict, body: str) -> str:
     Key order is preserved (CPython 3.7+ dicts are ordered), so existing
     fields keep their position and new fields append at the end.
     """
-    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
+    fm_yaml = _dump_yaml(fm)
     return f"---\n{fm_yaml}---\n{body}"
 
 
@@ -796,7 +820,7 @@ def _rewrite_doc(d: Doc, old: str, new: str) -> str | None:
     if not (fm_changed or body_changed):
         return None
 
-    fm_yaml = yaml.dump(new_fm, sort_keys=False, default_flow_style=None)
+    fm_yaml = _dump_yaml(new_fm)
     return f"---\n{fm_yaml}---\n{new_body}"
 
 
@@ -999,7 +1023,7 @@ def _render_molted(fm: dict | None, body: str) -> str:
     """
     if fm is None:
         return body.lstrip("\n")
-    fm_yaml = yaml.dump(fm, sort_keys=False, default_flow_style=None)
+    fm_yaml = _dump_yaml(fm)
     return f"---\n{fm_yaml}---\n{body}"
 
 

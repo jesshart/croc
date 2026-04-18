@@ -405,6 +405,23 @@ class TestAdoptBrownfield:
         actions = adopt_tree(tmp_path)
         assert any(a.startswith("SKIP") and "mapping" in a for a in actions)
 
+    def test_adopt_emits_link_list_in_block_style(self, tmp_path):
+        """Regression: adopt was emitting `- {to: X, strength: strong}`
+        (flow style) for link items because of PyYAML's size heuristic.
+        Block style is the human-readable form and matches hand-written
+        croc frontmatter."""
+        (tmp_path / "target.md").write_text("# Target")
+        (tmp_path / "other.md").write_text("# Other")
+        (tmp_path / "src.md").write_text("---\ntype: topic\n---\n\n# Src\n" "\nSee [t](target.md) and [o](other.md).\n")
+        adopt_tree(tmp_path)
+        src_content = (tmp_path / "src.md").read_text()
+        fm_text = src_content.split("---\n", 2)[1]
+        # Flow-style list items start `- {` — forbidden.
+        assert "- {" not in fm_text, f"flow-style link items in: {fm_text!r}"
+        # Block-style items use separate lines per key
+        assert "- to: " in fm_text
+        assert "  strength: strong" in fm_text
+
     def test_brownfield_end_to_end(self, tmp_path):
         """A real-world brownfield shape survives adopt and passes check.
 
@@ -1244,6 +1261,48 @@ class TestMolt:
         actions = molt_tree(tmp_path, dry_run=True)
         assert _tree_fingerprint(tmp_path) == before  # nothing written
         assert any(a.startswith("SKIP-MOLT-REF") for a in actions)
+
+    def test_frontmatter_emitted_in_block_style(self, tmp_path):
+        """Regression: PyYAML's `default_flow_style=None` collapses short
+        mappings to `{k: v}` flow style. Molt must emit block style so
+        post-molt diffs are readable and stable."""
+        (tmp_path / "x.md").write_text(
+            "---\n"
+            "type: topic\n"
+            "title: Original\n"
+            "author: test@example.com\n"
+            "id: x\n"
+            "kind: leaf\n"
+            "links: []\n"
+            "---\n\n# Body\n"
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "x.md").read_text()
+        fm_text = content.split("---\n", 2)[1]
+        # Block style never opens with `{`
+        assert not fm_text.lstrip().startswith("{"), f"frontmatter collapsed to flow style: {fm_text!r}"
+        # And each key appears on its own line
+        assert "type: topic" in fm_text
+        assert "title: Original" in fm_text
+        assert "author: test@example.com" in fm_text
+
+    def test_datetime_does_not_emit_timestamp_tag(self, tmp_path):
+        """Regression: flow-style emission decorated datetime values with
+        `!!timestamp` tags. Block style resolves the type implicitly, no
+        tag emitted."""
+        (tmp_path / "x.md").write_text(
+            "---\n"
+            "id: x\n"
+            "title: X\n"
+            "kind: leaf\n"
+            "links: []\n"
+            "date: 2026-04-16T00:00:00Z\n"
+            "author: test@example.com\n"
+            "---\n\n# Body\n"
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "x.md").read_text()
+        assert "!!timestamp" not in content, f"unexpected type tag in: {content!r}"
 
 
 class TestMoltHelpers:

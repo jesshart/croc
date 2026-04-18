@@ -6,6 +6,30 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.1.1 — 2026-04-17
+
+### Fixed
+
+- **YAML frontmatter emission uses block style consistently.** Previously
+  every YAML write path used `yaml.dump(..., default_flow_style=None)`,
+  which lets PyYAML's size heuristic decide between block and flow style
+  per node. The practical effect was that `molt` collapsed stripped-down
+  frontmatter to flow style (`{title: X}`) and emitted explicit
+  `!!timestamp` tags for datetime values, and `init --adopt` emitted
+  `links: [- {to: X, strength: strong}]` instead of readable block-style
+  items. All five emission call sites now route through a single
+  `_dump_yaml` helper that forces `default_flow_style=False`, disables
+  line-wrapping, and preserves Unicode verbatim. Datetime scalars round-
+  trip as implicit-tag plain scalars.
+
+- **`croc molt` no longer crashes on weak refs to missing targets.**
+  `_molt_body` looked up every referenced id in the tree index without
+  guarding the dangling-weak case (tolerated by Rule 3/4 by design),
+  raising `KeyError` on any `[[see:X]]` where `X` was absent. Now the
+  original `[[see:X]]` is preserved in the body and surfaced as a
+  `SKIP-MOLT-REF` note in the action log — visible in `--dry-run` so
+  the warning appears in the plan, not at write time.
+
 ## 0.1.0 — 2026-04-17
 
 Initial public release. Published to PyPI as `croc-cli` (the bare
