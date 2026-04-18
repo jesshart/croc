@@ -6,6 +6,30 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.2.0 — 2026-04-17
+
+### Added
+
+- **`--strict-refs` flag on `init` and `molt`.** Exits non-zero when
+  any `SKIP-REF` / `SKIP-MOLT-REF` notes were emitted. Useful in CI /
+  pre-commit where unresolvable refs should gate success. Default
+  behavior unchanged: a plain `init --adopt` still exits 0 even with
+  skips, preserving the adoption-must-land policy.
+
+### Changed
+
+- **Summary line separates writes from skip notes.** Previously
+  `init OK (164 actions)` blurred 161 writes with 3 skip notes; now
+  it reads `init OK (161 actions, 3 skipped refs)`. Same change
+  applied to `molt` and to dry-run summaries.
+
+- **Skip notes re-echoed on stderr after the summary.** An adopt run
+  on a large tree was burying SKIP-REF lines under hundreds of
+  AUGMENTs; by the time the summary printed, the skips had scrolled
+  off-screen. They now re-appear in a bold-yellow stderr block as
+  the last thing the user sees. Inline skip lines are also colored
+  yellow so they stop blending into successful actions.
+
 ## 0.1.1 — 2026-04-17
 
 ### Fixed

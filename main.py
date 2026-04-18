@@ -25,6 +25,74 @@ app = typer.Typer(
 )
 
 
+def _is_skip_action(action: str) -> bool:
+    """Skip-class actions report a problem but do not write anything.
+
+    SKIP (malformed frontmatter), SKIP-REF (unresolvable body path-ref),
+    SKIP-MOLT-REF (weak ref to missing target) all share this property.
+    They deserve separate accounting in the summary and need visual
+    emphasis so they don't scroll past a user's attention.
+    """
+    return action.startswith("SKIP")
+
+
+def _render_actions(
+    actions: list[str],
+    *,
+    dry_run: bool,
+    verb_label: str,
+) -> int:
+    """Print actions with SKIP lines highlighted, separate writes from
+    skips in the summary, and re-echo any skips after the summary so
+    they survive a wall of successful actions.
+
+    Returns the number of skip-class notes so callers can honor
+    `--strict-refs` with a non-zero exit.
+    """
+    skips = [a for a in actions if _is_skip_action(a)]
+    writes = [a for a in actions if not _is_skip_action(a)]
+
+    prefix = "would " if dry_run else ""
+    for a in actions:
+        if _is_skip_action(a):
+            typer.secho(f"{prefix}{a}", fg=typer.colors.YELLOW)
+        else:
+            typer.echo(f"{prefix}{a}")
+
+    n_writes = len(writes)
+    n_skips = len(skips)
+    wp = "" if n_writes == 1 else "s"
+    sp = "" if n_skips == 1 else "s"
+
+    if dry_run:
+        summary = f"(dry-run: {n_writes} action{wp}"
+        if n_skips:
+            summary += f", {n_skips} skipped ref{sp}"
+        summary += "; nothing written)"
+    else:
+        summary = f"{verb_label} OK ({n_writes} action{wp}"
+        if n_skips:
+            summary += f", {n_skips} skipped ref{sp}"
+        summary += ")"
+    typer.echo(summary)
+
+    # Re-echo skips on stderr in yellow so they're the last thing the user
+    # sees. stderr keeps pipes clean; the yellow + header breaks the wall
+    # of AUGMENT/MOLT/etc. that would otherwise bury them.
+    if skips:
+        typer.secho("", err=True)
+        typer.secho(
+            f"Unresolved ref{sp} ({n_skips}) — left for manual cleanup:",
+            err=True,
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+        for s in skips:
+            typer.secho(f"  {s}", err=True, fg=typer.colors.YELLOW)
+
+    return n_skips
+
+
 @app.command("check")
 def check_cmd(
     root: pathlib.Path = typer.Argument(
@@ -120,6 +188,15 @@ def init_cmd(
         ),
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions; do not write."),
+    strict_refs: bool = typer.Option(
+        False,
+        "--strict-refs",
+        help=(
+            "Exit non-zero if any SKIP / SKIP-REF notes were emitted. "
+            "Use in CI / pre-commit so unresolvable refs are not silently "
+            "ignored."
+        ),
+    ),
 ) -> None:
     """Initialize a croc tree. Optionally scaffold missing frontmatter."""
     path = path.resolve()
@@ -141,16 +218,9 @@ def init_cmd(
         typer.echo(f"init FAILED: {e}", err=True)
         raise typer.Exit(code=1) from e
 
-    for a in actions:
-        prefix = "would " if dry_run else ""
-        typer.echo(f"{prefix}{a}")
-
-    n = len(actions)
-    plural = "" if n == 1 else "s"
-    if dry_run:
-        typer.echo(f"(dry-run: {n} action{plural}; nothing written)")
-    else:
-        typer.echo(f"init OK ({n} action{plural})")
+    n_skips = _render_actions(actions, dry_run=dry_run, verb_label="init")
+    if strict_refs and n_skips:
+        raise typer.Exit(code=1)
 
 
 @app.command("molt")
@@ -160,6 +230,15 @@ def molt_cmd(
         False,
         "--dry-run",
         help="Preview actions; do not write.",
+    ),
+    strict_refs: bool = typer.Option(
+        False,
+        "--strict-refs",
+        help=(
+            "Exit non-zero if any SKIP-MOLT-REF notes were emitted. "
+            "Use in CI so dangling weak refs do not silently survive "
+            "a molt."
+        ),
     ),
 ) -> None:
     """Reverse croc adoption.
@@ -175,16 +254,9 @@ def molt_cmd(
         typer.echo(f"molt FAILED: {e}", err=True)
         raise typer.Exit(code=1) from e
 
-    for a in actions:
-        prefix = "would " if dry_run else ""
-        typer.echo(f"{prefix}{a}")
-
-    n = len(actions)
-    plural = "" if n == 1 else "s"
-    if dry_run:
-        typer.echo(f"(dry-run: {n} action{plural}; nothing written)")
-    else:
-        typer.echo(f"molt OK ({n} action{plural})")
+    n_skips = _render_actions(actions, dry_run=dry_run, verb_label="molt")
+    if strict_refs and n_skips:
+        raise typer.Exit(code=1)
 
 
 @app.command("refs")
