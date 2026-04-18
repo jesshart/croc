@@ -412,7 +412,7 @@ class TestAdoptBrownfield:
         croc frontmatter."""
         (tmp_path / "target.md").write_text("# Target")
         (tmp_path / "other.md").write_text("# Other")
-        (tmp_path / "src.md").write_text("---\ntype: topic\n---\n\n# Src\n" "\nSee [t](target.md) and [o](other.md).\n")
+        (tmp_path / "src.md").write_text("---\ntype: topic\n---\n\n# Src\n\nSee [t](target.md) and [o](other.md).\n")
         adopt_tree(tmp_path)
         src_content = (tmp_path / "src.md").read_text()
         fm_text = src_content.split("---\n", 2)[1]
@@ -1267,14 +1267,7 @@ class TestMolt:
         mappings to `{k: v}` flow style. Molt must emit block style so
         post-molt diffs are readable and stable."""
         (tmp_path / "x.md").write_text(
-            "---\n"
-            "type: topic\n"
-            "title: Original\n"
-            "author: test@example.com\n"
-            "id: x\n"
-            "kind: leaf\n"
-            "links: []\n"
-            "---\n\n# Body\n"
+            "---\ntype: topic\ntitle: Original\nauthor: test@example.com\nid: x\nkind: leaf\nlinks: []\n---\n\n# Body\n"
         )
         molt_tree(tmp_path)
         content = (tmp_path / "x.md").read_text()
