@@ -18,8 +18,12 @@ wheels/
 # Local prototypes and agent-memory experiments
 .claude/
 scripts/
-thoughts/
-docs/plans/
+# Anchored to the repo root so example trees like examples/thoughts/ and
+# examples/thoughts-from-code/thoughts/ remain committable. Without the
+# leading slash gitignore matches any `thoughts/` / `docs/plans/` directory
+# anywhere in the tree, which silently hides bundled fixtures.
+/thoughts/
+/docs/plans/
 
 # Local working notes
 FOLLOWUPS.md

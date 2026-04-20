@@ -6,6 +6,36 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Added
+
+- **`croc crawl <src>`** — scaffold a plain-markdown doc tree from a
+  source directory. One `.md` stub per file, one `self.md` per
+  directory. Output carries only a `mirrors:` breadcrumb in
+  frontmatter (no `id` / `title` / `kind` / `links`), making crawl
+  output shape-compatible with the post-molt state — the adopt/molt
+  cycle round-trips cleanly through crawl-produced files. Pass
+  `--adopt` to fold in `init --adopt` and get a `croc check`-clean
+  tree in one step.
+
+  Default discovery mirrors every file git tracks (dot-dirs and
+  `__pycache__` are always pruned). Narrow by extension with
+  `--file-types .py --file-types .ts` (repeat the flag for multiples;
+  pass `all` for no filter). Honors `.gitignore` automatically when
+  run inside a git repo. Re-running without `--force` skips existing
+  files — idempotent.
+
+  Subsumes the `docure` experiment; croc can now produce a starting
+  tree in addition to managing one.
+
+### Fixed
+
+- **`.gitignore` anchoring.** The `thoughts/` and `docs/plans/` rules
+  were unanchored, which meant they matched *any* directory of those
+  names anywhere in the tree — silently hiding bundled example
+  fixtures like `examples/thoughts/` and
+  `examples/thoughts-from-code/thoughts/` from new commits. Both rules
+  now carry leading slashes so they only apply at the repo root.
+
 ## 0.2.0 — 2026-04-17
 
 ### Added

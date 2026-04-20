@@ -55,6 +55,11 @@ uv run croc check examples/thoughts
 # Print the derived id → path index
 uv run croc index examples/thoughts
 
+# Scaffold a doc tree from a source directory (plain markdown)
+uv run croc crawl src/
+# Same, but also adopt into croc shape — ready for `croc check`
+uv run croc crawl src/ --adopt
+
 # Adopt croc on a repo with plain markdown (preview first)
 uv run croc init --adopt --dry-run path/to/docs/
 uv run croc init --adopt            path/to/docs/
@@ -115,6 +120,34 @@ Proposed ids are **hierarchical** — slugified relative path, not just the file
 | `self.md` (root)                                  | `root`                                   |
 
 Collisions (rare path-slug ambiguities, or `foo.md` at root competing with `foo/self.md`) are reported and the command refuses to write.
+
+### `croc crawl <src> [-o OUT] [--adopt] [--file-types EXT ...] [--force] [--dry-run]`
+
+Scaffold a plain-markdown doc tree from a source directory. One `.md` stub per file, one `self.md` per directory. Output carries only a `mirrors:` breadcrumb in frontmatter — no `id` / `kind` / `links` — so the shape is compatible with croc's post-molt state and the adopt/molt cycle round-trips cleanly.
+
+```bash
+# Plain scaffold — output lands at ./thoughts/<src-name>/ by default
+croc crawl src/
+
+# Preview the plan
+croc crawl src/ --dry-run
+
+# One-step: scaffold + run `init --adopt` on the result → croc-checkable tree
+croc crawl src/ --adopt
+
+# Narrow discovery by extension (default mirrors every file git tracks)
+croc crawl src/ --file-types .py --file-types .ts
+```
+
+**Default discovery** mirrors every file git tracks. Dot-prefixed directories (`.git`, `.venv`, ...) and `__pycache__` are always pruned. `.gitignore` is honored automatically when run inside a git repo; for repos without `.gitignore` discipline, use `--file-types` to narrow.
+
+**Two-step vs one-step.** The default two-step flow — `croc crawl src/` then `croc init --adopt thoughts/src/` — gives you a plain-markdown tree you can edit by hand before adopting. The one-step `--adopt` variant is for cases where you just want a croc-checkable tree immediately. Both are idempotent; re-running is a no-op unless `--force` is passed.
+
+**Why shape-compatibility with molt matters.** `crawl` emits the same frontmatter shape a file ends up with after `molt` (nothing but non-croc fields like `mirrors:`). That means the lifecycle `crawl → (adopt → edit → check → molt)*` is symmetric around crawl's output: you can stay plain, adopt when you want the checker, molt back for sharing, re-adopt later — and crawl sits cleanly outside the cycle. Try the bundled example:
+
+```bash
+uv run croc check examples/thoughts-from-code/thoughts
+```
 
 ### `croc molt <root> [--dry-run]`
 
@@ -280,14 +313,18 @@ croc/
 ├── croc/
 │   ├── __init__.py
 │   ├── check.py       # borrow checker; pure over list[Doc]
-│   └── ops.py         # transformations: move, rename, init, adopt
+│   ├── crawl.py       # scaffold plain-markdown trees from source
+│   └── ops.py         # transformations: move, rename, init, adopt, molt
 ├── main.py            # Typer CLI — thin wrapper around ops
 ├── tests/
 │   ├── conftest.py    # shared fixtures (tmp_path trees)
 │   ├── test_check.py  # parser + five rules
-│   └── test_ops.py    # move, rename, init, adopt, dry-run
-├── docs/design.md     # full Rust-inspired rationale
-├── examples/thoughts/ # canonical sample tree
+│   ├── test_cli.py    # Typer CLI surface + exit codes
+│   ├── test_crawl.py  # plan/build, filters, adopt/molt cycle
+│   └── test_ops.py    # move, rename, init, adopt, molt, dry-run
+├── docs/design.md                    # full Rust-inspired rationale
+├── examples/thoughts/                # canonical sample tree
+├── examples/thoughts-from-code/      # crawl fixture (src + adopted output)
 └── pyproject.toml
 ```
 
@@ -312,7 +349,7 @@ croc/
 
 ```bash
 uv sync --group dev
-uv run pytest                # 62 tests, ~0.1s
+uv run pytest                # ~190 tests, ~0.3s
 uv run pytest -v             # verbose
 uv run pytest -k rename      # filter by name
 ```
@@ -328,6 +365,22 @@ The test suite encodes the guarantees as regressions. Notable cases:
 - **YAML round-trip formatting.** `rename` re-serializes frontmatter; inline flow style `{ to: X, strength: Y }` may render as `{to: X, strength: Y}`. Cosmetic — swap `yaml.dump` for `ruamel.yaml` if formatting preservation matters.
 - **No `.crocignore`.** Trees with vendored READMEs or generated files need `init --adopt` pointed at a subdirectory.
 - **Symlinked subtrees are not traversed.** `scan_symlinks` emits warnings; the user decides whether to follow.
+
+### Releasing
+
+Releases are cut through GitHub Releases — **not** a manual publish command. Publishing a release fires [`.github/workflows/publish.yml`](.github/workflows/publish.yml), which runs `uv build && uv publish --trusted-publishing always` inside the `pypi` environment via OIDC. There are no stored PyPI tokens to rotate.
+
+The flow:
+
+1. Land changes on `main`. Ensure CI is green (`style` + `test` workflows).
+2. Bump `version` in [`pyproject.toml`](pyproject.toml) and `__version__` in [`croc/__init__.py`](croc/__init__.py). Keep them in sync. Pre-1.0: minor bump for new features, patch bump for fixes.
+3. Promote the `## Unreleased` section in [`CHANGELOG.md`](CHANGELOG.md) to `## X.Y.Z — YYYY-MM-DD`. Add a fresh empty `## Unreleased` above it.
+4. Commit as `chore(release): vX.Y.Z`. Duplicate the CHANGELOG section into the commit body so the commit stands alone.
+5. Push: `git push origin main`.
+6. Tag: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
+7. Create the GitHub Release from the tag: `gh release create vX.Y.Z --notes-from-tag` (or use the web UI). Publication triggers the publish workflow.
+
+The `make pypi` target is a **manual fallback only**, not the canonical path. It runs `uv build && uv publish` locally and requires a PyPI token in the environment; it bypasses CI's clean build and the version/tag/changelog discipline above. Avoid it unless Trusted Publishing is down.
 
 ### Further reading
 
