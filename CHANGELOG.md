@@ -6,6 +6,8 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.3.0 — 2026-04-20
+
 ### Added
 
 - **`croc crawl <src>`** — scaffold a plain-markdown doc tree from a
