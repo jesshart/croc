@@ -106,3 +106,92 @@ def test_clean_tree_has_no_unresolved_ref_block(runner: CliRunner, tmp_path: pat
     result = runner.invoke(app, ["init", "--adopt", str(tmp_path)])
     assert result.exit_code == 0
     assert "Unresolved ref" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# crawl
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def src_with_py(tmp_path: pathlib.Path) -> pathlib.Path:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("a = 1\n")
+    return src
+
+
+def test_crawl_dry_run_writes_nothing(runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path) -> None:
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out), "--dry-run"])
+    assert result.exit_code == 0
+    assert "would CREATE" in result.stdout
+    assert not out.exists()
+
+
+def test_crawl_adopt_flag_produces_checkable_tree(
+    runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path
+) -> None:
+    """The one-shot path: `crawl --adopt` → tree passes `check`."""
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out), "--adopt"])
+    assert result.exit_code == 0
+
+    check_result = runner.invoke(app, ["check", str(out)])
+    assert check_result.exit_code == 0
+    assert "borrow check OK" in check_result.stdout
+
+
+def test_crawl_strict_refs_clean_exits_zero(
+    runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path
+) -> None:
+    """--strict-refs is not punitive: a clean crawl --adopt still exits 0."""
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out), "--adopt", "--strict-refs"])
+    assert result.exit_code == 0
+
+
+def test_crawl_strict_refs_exits_nonzero_on_unresolvable_ref(
+    runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path
+) -> None:
+    """Pre-seeded broken ref in the output dir survives crawl (existing file
+    kept), then adopt hits it with SKIP-REF; --strict-refs turns that into
+    a non-zero exit. Same pathway test_strict_refs_flag_exits_nonzero_when_skips_present
+    exercises for `init --adopt`, here routed through the crawl command."""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "seed.md").write_text("# Seed\n\n[missing](nowhere.md)\n")
+    result = runner.invoke(
+        app,
+        ["crawl", str(src_with_py), "-o", str(out), "--adopt", "--strict-refs"],
+    )
+    assert result.exit_code == 1
+    assert "crawl OK" in result.stdout
+    assert "SKIP-REF" in result.stderr or "SKIP-REF" in result.stdout
+
+
+def test_crawl_adopt_dry_run_prints_advisory(
+    runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path
+) -> None:
+    """--adopt + --dry-run can't simulate adoption (no files on disk yet);
+    we surface a note pointing to the follow-up command instead of silently
+    skipping."""
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out), "--adopt", "--dry-run"])
+    assert result.exit_code == 0
+    assert "not previewed in --dry-run" in result.stderr
+
+
+def test_crawl_existing_files_noted_on_stderr(
+    runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path
+) -> None:
+    """Re-running crawl without --force keeps existing files; the count
+    lands on stderr so it's visible even after a wall of CREATE lines."""
+    out = tmp_path / "out"
+    first = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out)])
+    assert first.exit_code == 0
+
+    second = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out)])
+    assert second.exit_code == 0
+    assert "existing file(s) kept" in second.stderr
+    assert "crawl OK (0 actions)" in second.stdout

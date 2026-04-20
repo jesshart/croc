@@ -8,6 +8,7 @@ import pathlib
 import typer
 
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
+from croc.crawl import apply_plan, list_git_files, plan_crawl
 from croc.ops import (
     OpError,
     adopt_tree,
@@ -220,6 +221,119 @@ def init_cmd(
 
     n_skips = _render_actions(actions, dry_run=dry_run, verb_label="init")
     if strict_refs and n_skips:
+        raise typer.Exit(code=1)
+
+
+@app.command("crawl")
+def crawl_cmd(
+    src: pathlib.Path = typer.Argument(..., help="Source directory to mirror."),
+    output: pathlib.Path = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output directory. Defaults to ./thoughts/<src-name>/.",
+    ),
+    file_types: list[str] = typer.Option(
+        ["all"],
+        "--file-types",
+        help=(
+            "Narrow to specific extensions (repeat for multiple, e.g. "
+            "--file-types .py --file-types .ts). Default mirrors every "
+            "file git tracks; dot-dirs and __pycache__ are always pruned."
+        ),
+    ),
+    adopt: bool = typer.Option(
+        False,
+        "--adopt",
+        help="After crawling, run init + adopt on the output so the tree is croc-checkable.",
+    ),
+    migrate_refs: bool = typer.Option(
+        True,
+        "--migrate-refs/--no-migrate-refs",
+        help="With --adopt, passed through to adoption. No effect otherwise.",
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing files."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions; do not write."),
+    strict_refs: bool = typer.Option(
+        False,
+        "--strict-refs",
+        help=("With --adopt: exit nonzero if the adopt phase emitted SKIP notes. Has no effect without --adopt."),
+    ),
+) -> None:
+    """Scaffold a plain-markdown doc tree from a source directory.
+
+    Emits plain markdown with only a `mirrors:` breadcrumb in
+    frontmatter — no id, no links. That keeps crawl output shape-
+    compatible with croc's post-molt state, so `adopt` / `molt`
+    round-trips cleanly. Pass `--adopt` to fold in `init --adopt`
+    and get a croc-checkable tree in one shot.
+    """
+    if not src.exists() or not src.is_dir():
+        typer.echo(f"crawl FAILED: {src}: not a directory", err=True)
+        raise typer.Exit(code=1)
+
+    if output is None:
+        output = pathlib.Path("thoughts") / src.name
+
+    git_files = list_git_files(src)
+    if git_files is not None:
+        typer.secho("respecting .gitignore (git repo detected)", err=True, fg=typer.colors.CYAN)
+
+    planned = plan_crawl(src, output, file_types=file_types, git_files=git_files)
+
+    if not planned:
+        typer.echo(f"crawl FAILED: no matching files found under {src}", err=True)
+        raise typer.Exit(code=1)
+
+    # Split the plan into would-create vs would-keep. Existing files
+    # are summarized on stderr (not fed through _render_actions as
+    # SKIP lines — they're intentional, not unresolvable).
+    to_create: list[tuple[pathlib.Path, str]] = []
+    n_existing = 0
+    actions: list[str] = []
+    cwd = pathlib.Path.cwd()
+    for out_path, content in planned:
+        try:
+            display = out_path.relative_to(cwd)
+        except ValueError:
+            display = out_path
+        if out_path.exists() and not force:
+            n_existing += 1
+            continue
+        to_create.append((out_path, content))
+        actions.append(f"CREATE {display}")
+
+    if not dry_run and to_create:
+        apply_plan(to_create, force=True)  # force=True because we filtered already
+
+    if adopt:
+        if dry_run:
+            # Files aren't on disk yet; adopt needs them to analyze
+            # frontmatter and collision-check ids. Surface the gap
+            # instead of silently skipping.
+            typer.secho(
+                "note: --adopt actions not previewed in --dry-run; "
+                f"run `croc init --adopt --dry-run {output}` after commit to see them",
+                err=True,
+                fg=typer.colors.CYAN,
+            )
+        else:
+            try:
+                actions += init_tree(output, dry_run=False)
+                actions += adopt_tree(output, dry_run=False, migrate_refs=migrate_refs)
+            except OpError as e:
+                typer.echo(f"crawl adopt FAILED: {e}", err=True)
+                raise typer.Exit(code=1) from e
+
+    if n_existing:
+        typer.secho(
+            f"note: {n_existing} existing file(s) kept (pass --force to overwrite)",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+
+    n_skips = _render_actions(actions, dry_run=dry_run, verb_label="crawl")
+    if strict_refs and adopt and n_skips:
         raise typer.Exit(code=1)
 
 
