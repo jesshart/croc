@@ -226,18 +226,25 @@ def _init_repo_with_draft(root: pathlib.Path) -> None:
     (root / "thoughts" / "draft.md").write_text("# draft\n")
 
 
-def test_global_flag_appears_in_help(runner: CliRunner, monkeypatch) -> None:
-    """The flag is documented at the app level, not per-command.
+def test_global_flag_registered_at_app_level() -> None:
+    """The flag is declared on the app-level callback, not per-command.
 
-    Forces a wide terminal so Typer doesn't wrap `--include-untracked`
-    into `--include-\nuntracked` (which defeats a naive substring
-    check). CI runs at 80 columns by default.
+    Asserts against Typer's registered callback params directly instead
+    of scraping rendered --help output — Rich word-wraps flag names to
+    terminal width under `CliRunner` (which captures stdout and defaults
+    to 80 columns), so a substring scan is brittle across environments.
+    The registered params are the source of truth; if they exist, the
+    flag is discoverable by users.
     """
-    monkeypatch.setenv("COLUMNS", "200")
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    assert "--include-untracked" in result.output
-    assert "--no-include-untracked" in result.output
+    import typer.main
+
+    click_group = typer.main.get_command(app)
+    opts_by_name = {p.name: (p.opts, getattr(p, "secondary_opts", [])) for p in click_group.params}
+
+    assert "include_untracked" in opts_by_name, "global --include-untracked param missing"
+    primary, secondary = opts_by_name["include_untracked"]
+    assert "--include-untracked" in primary
+    assert "--no-include-untracked" in secondary
 
 
 def test_init_adopt_default_skips_drafts(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
