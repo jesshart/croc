@@ -1,3 +1,3 @@
 """croc — a Rust-inspired, Typer-powered CLI for reliably managing project docs."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

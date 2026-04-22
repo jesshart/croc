@@ -6,6 +6,8 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.5.0 — 2026-04-22
+
 ### Added
 
 - **`croc lurk [root] [-n/--max-lines N]`** — report any `.md` file
