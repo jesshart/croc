@@ -99,13 +99,27 @@ def parse_frontmatter(path: pathlib.Path, raw: str) -> tuple[dict, str]:
     return fm, body
 
 
-def load_tree(root: pathlib.Path) -> list[Doc]:
+def load_tree(
+    root: pathlib.Path,
+    *,
+    git_files: set[pathlib.Path] | None = None,
+) -> list[Doc]:
+    """Load every `.md` under `root` as a `Doc`.
+
+    When `git_files` is provided, only files whose resolved path lives
+    in that set are loaded — the rest are silently skipped (not
+    parsed, not errored). `None` (the default) means "walk everything";
+    the CLI layer is responsible for deciding the set and passing it
+    in. See `croc.crawl.resolve_file_filter`.
+    """
     if not root.exists():
         raise TreeError(f"{root}: does not exist")
     if not root.is_dir():
         raise TreeError(f"{root}: not a directory")
     docs: list[Doc] = []
     for p in sorted(root.rglob("*.md")):
+        if git_files is not None and p.resolve() not in git_files:
+            continue
         fm, body = parse_frontmatter(p, p.read_text())
         docs.append(
             Doc(
@@ -118,16 +132,27 @@ def load_tree(root: pathlib.Path) -> list[Doc]:
     return docs
 
 
-def scan_symlinks(root: pathlib.Path) -> list[str]:
+def scan_symlinks(
+    root: pathlib.Path,
+    *,
+    git_files: set[pathlib.Path] | None = None,
+) -> list[str]:
     """Return warnings for symlinks under `root` that rglob will not follow.
 
     Symlinks are never traversed (cycle risk), so a symlinked subtree is
     silently skipped. Surface that instead of hiding it.
+
+    When `git_files` is provided, symlinks outside the filter set are
+    ignored — a user who excluded them from their tree doesn't need
+    them called out. Bonus side effect: the `.git/` subtree is skipped
+    entirely, since none of its entries are in the filter set.
     """
     if not root.is_dir():
         return []
     warnings: list[str] = []
     for p in sorted(root.rglob("*")):
+        if git_files is not None and p.resolve() not in git_files:
+            continue
         if p.is_symlink():
             warnings.append(
                 f"warning: symlink {p.relative_to(root)} not traversed (symlinks are never followed to avoid cycles)"

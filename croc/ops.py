@@ -99,6 +99,8 @@ def move_file(
     src: pathlib.Path,
     dst: pathlib.Path,
     dry_run: bool = False,
+    *,
+    git_files: set[pathlib.Path] | None = None,
 ) -> pathlib.Path:
     """Relocate a file on disk.
 
@@ -128,7 +130,7 @@ def move_file(
     if dst.exists():
         raise OpError(f"{dst}: already exists")
 
-    _assert_sound(root)
+    _assert_sound(root, git_files=git_files)
 
     if dry_run:
         return dst
@@ -153,11 +155,20 @@ def rename_id(
     old_id: str,
     new_id: str,
     dry_run: bool = False,
+    *,
+    git_files: set[pathlib.Path] | None = None,
 ) -> list[DocPath]:
     """Rename a doc's id. Rewrites every referrer atomically.
 
     Returns the list of paths that were (or would be) modified.
     `dry_run=True` runs validate-plan-simulate but skips commit.
+
+    `git_files`: when provided, the filter scopes which files are
+    loaded, checked, and rewritten. Drafts outside the filter keep
+    stale refs to `old_id` — they'll surface as unresolved when the
+    user eventually includes them (either by `git add` or by re-
+    running with `--include-untracked`). See the plan at
+    `thoughts/shared/plans/2026-04-22-tracked-files-filter.md`.
     """
     root = root.resolve()
 
@@ -166,7 +177,7 @@ def rename_id(
     if old_id == new_id:
         raise OpError("old and new id are the same")
 
-    docs = _assert_sound(root)
+    docs = _assert_sound(root, git_files=git_files)
 
     index = build_index(docs)
     if old_id not in index:
@@ -238,6 +249,8 @@ def adopt_tree(
     root: pathlib.Path,
     dry_run: bool = False,
     migrate_refs: bool = True,
+    *,
+    git_files: set[pathlib.Path] | None = None,
 ) -> list[str]:
     """Bring every `.md` under `root` into the managed croc schema.
 
@@ -279,6 +292,8 @@ def adopt_tree(
     skip_notes: list[str] = []
 
     for p in sorted(root.rglob("*.md")):
+        if git_files is not None and p.resolve() not in git_files:
+            continue
         entry = _classify_for_adopt(p, root, existing_ids, skip_notes, migrate_refs=migrate_refs)
         if entry is not None:
             plan.append(entry)
@@ -510,7 +525,11 @@ class PathRefReport:
     note: str | None = None  # reason for unresolved status, if explanatory
 
 
-def scan_path_refs(root: pathlib.Path) -> list[PathRefReport]:
+def scan_path_refs(
+    root: pathlib.Path,
+    *,
+    git_files: set[pathlib.Path] | None = None,
+) -> list[PathRefReport]:
     """Walk the tree and report every markdown path-ref.
 
     Works on any markdown tree — no croc frontmatter required. Useful as
@@ -523,6 +542,8 @@ def scan_path_refs(root: pathlib.Path) -> list[PathRefReport]:
 
     reports: list[PathRefReport] = []
     for p in sorted(root.rglob("*.md")):
+        if git_files is not None and p.resolve() not in git_files:
+            continue
         source_rel = DocPath(str(p.relative_to(root)))
         try:
             text = p.read_text()
@@ -761,10 +782,14 @@ def _require_under_root(path: pathlib.Path, root: pathlib.Path) -> None:
         raise OpError(f"{path}: not under tree root {root}") from e
 
 
-def _assert_sound(root: pathlib.Path) -> list[Doc]:
+def _assert_sound(
+    root: pathlib.Path,
+    *,
+    git_files: set[pathlib.Path] | None = None,
+) -> list[Doc]:
     """Load + check. Raise OpError if the tree can't be loaded or is unsound."""
     try:
-        docs = load_tree(root)
+        docs = load_tree(root, git_files=git_files)
     except TreeError as e:
         raise OpError(f"pre-check: {e}") from e
     errors = check(docs)
@@ -887,7 +912,12 @@ def _commit(root: pathlib.Path, plan: dict[DocPath, str]) -> None:
 _CROC_FRONTMATTER_FIELDS: tuple[str, ...] = ("id", "kind", "links")
 
 
-def molt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
+def molt_tree(
+    root: pathlib.Path,
+    dry_run: bool = False,
+    *,
+    git_files: set[pathlib.Path] | None = None,
+) -> list[str]:
     """Reverse adoption.
 
     Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into plain
@@ -899,7 +929,7 @@ def molt_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
     `dry_run=True` runs validation and planning but writes nothing.
     """
     root = root.resolve()
-    docs = _assert_sound(root)  # pre-check; raises OpError if unsound
+    docs = _assert_sound(root, git_files=git_files)  # pre-check; raises OpError if unsound
     index = build_index(docs)
     id_to_title: dict[DocId, str] = {d.id: str(d.frontmatter.get("title", d.id)) for d in docs}
 

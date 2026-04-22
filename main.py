@@ -8,7 +8,7 @@ import pathlib
 import typer
 
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
-from croc.crawl import apply_plan, list_git_files, plan_crawl
+from croc.crawl import apply_plan, plan_crawl, resolve_file_filter
 from croc.ops import (
     OpError,
     adopt_tree,
@@ -24,6 +24,39 @@ app = typer.Typer(
     help="A Rust-inspired CLI for reliably managing project documentation.",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def _root(
+    ctx: typer.Context,
+    include_untracked: bool = typer.Option(
+        False,
+        "--include-untracked/--no-include-untracked",
+        help=(
+            "Include untracked (but not gitignored) files in the tree "
+            "walk. Default is tracked-only — commands like `check`, "
+            "`refs`, `init --adopt`, `molt`, `rename`, `move`, and "
+            "`crawl` skip in-progress drafts. Pass --include-untracked "
+            "to fold them in. Outside a git repo, every file is walked "
+            "regardless. Flag name mirrors `git stash --include-untracked`."
+        ),
+    ),
+) -> None:
+    ctx.ensure_object(dict)
+    ctx.obj["include_untracked"] = include_untracked
+
+
+def _file_filter_for(
+    ctx: typer.Context,
+    root: pathlib.Path,
+) -> set[pathlib.Path] | None:
+    """Resolve the git-backed file filter for this invocation, using
+    the flag stashed on `ctx.obj` by the root callback. Returns `None`
+    when `root` is not in a git repo — callers pass `None` straight
+    through to the ops layer, which treats it as 'walk everything.'
+    """
+    include_untracked = bool((ctx.obj or {}).get("include_untracked", False))
+    return resolve_file_filter(root, include_untracked=include_untracked)
 
 
 def _is_skip_action(action: str) -> bool:
@@ -96,19 +129,21 @@ def _render_actions(
 
 @app.command("check")
 def check_cmd(
+    ctx: typer.Context,
     root: pathlib.Path = typer.Argument(
         pathlib.Path("thoughts"),
         help="Root of the documentation tree.",
     ),
 ) -> None:
     """Run the borrow checker against a doc tree."""
+    git_files = _file_filter_for(ctx, root)
     try:
-        docs = load_tree(root)
+        docs = load_tree(root, git_files=git_files)
     except TreeError as e:
         typer.echo(f"borrow check FAILED:\n  {e}", err=True)
         raise typer.Exit(code=2) from e
 
-    for w in scan_symlinks(root):
+    for w in scan_symlinks(root, git_files=git_files):
         typer.echo(w, err=True)
 
     if not docs:
@@ -125,14 +160,16 @@ def check_cmd(
 
 @app.command("index")
 def index_cmd(
+    ctx: typer.Context,
     root: pathlib.Path = typer.Argument(
         pathlib.Path("thoughts"),
         help="Root of the documentation tree.",
     ),
 ) -> None:
     """Print the derived id → path index as JSON."""
+    git_files = _file_filter_for(ctx, root)
     try:
-        docs = load_tree(root)
+        docs = load_tree(root, git_files=git_files)
     except TreeError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(code=2) from e
@@ -141,14 +178,16 @@ def index_cmd(
 
 @app.command("move")
 def move_cmd(
+    ctx: typer.Context,
     src: pathlib.Path = typer.Argument(..., help="Source file."),
     dst: pathlib.Path = typer.Argument(..., help="Destination file or directory."),
     root: pathlib.Path = typer.Option(pathlib.Path("."), "--root", "-r", help="Tree root."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run all checks; do not move."),
 ) -> None:
     """Relocate a file on disk. IDs stay valid — no references rewritten."""
+    git_files = _file_filter_for(ctx, root)
     try:
-        final_dst = move_file(root, src, dst, dry_run=dry_run)
+        final_dst = move_file(root, src, dst, dry_run=dry_run, git_files=git_files)
     except OpError as e:
         typer.echo(f"move FAILED: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -158,14 +197,16 @@ def move_cmd(
 
 @app.command("rename")
 def rename_cmd(
+    ctx: typer.Context,
     old_id: str = typer.Argument(..., help="Current id."),
     new_id: str = typer.Argument(..., help="New id."),
     root: pathlib.Path = typer.Option(pathlib.Path("."), "--root", "-r", help="Tree root."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Run validation + simulation; do not write."),
 ) -> None:
     """Rename an id. Every strong and weak reference is rewritten atomically."""
+    git_files = _file_filter_for(ctx, root)
     try:
-        changed = rename_id(root, old_id, new_id, dry_run=dry_run)
+        changed = rename_id(root, old_id, new_id, dry_run=dry_run, git_files=git_files)
     except OpError as e:
         typer.echo(f"rename FAILED: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -177,6 +218,7 @@ def rename_cmd(
 
 @app.command("init")
 def init_cmd(
+    ctx: typer.Context,
     path: pathlib.Path = typer.Argument(pathlib.Path("."), help="Tree root to initialize."),
     adopt: bool = typer.Option(False, "--adopt", help="Scaffold frontmatter into every .md that lacks it."),
     migrate_refs: bool = typer.Option(
@@ -210,11 +252,12 @@ def init_cmd(
         )
         raise typer.Exit(code=1)
 
+    git_files = _file_filter_for(ctx, path)
     actions: list[str] = []
     try:
         actions += init_tree(path, dry_run=dry_run)
         if adopt:
-            actions += adopt_tree(path, dry_run=dry_run, migrate_refs=migrate_refs)
+            actions += adopt_tree(path, dry_run=dry_run, migrate_refs=migrate_refs, git_files=git_files)
     except OpError as e:
         typer.echo(f"init FAILED: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -226,6 +269,7 @@ def init_cmd(
 
 @app.command("crawl")
 def crawl_cmd(
+    ctx: typer.Context,
     src: pathlib.Path = typer.Argument(..., help="Source directory to mirror."),
     output: pathlib.Path = typer.Option(
         None,
@@ -275,9 +319,15 @@ def crawl_cmd(
     if output is None:
         output = pathlib.Path("thoughts") / src.name
 
-    git_files = list_git_files(src)
+    git_files = _file_filter_for(ctx, src)
     if git_files is not None:
-        typer.secho("respecting .gitignore (git repo detected)", err=True, fg=typer.colors.CYAN)
+        include_untracked = bool((ctx.obj or {}).get("include_untracked", False))
+        mode = "including untracked drafts" if include_untracked else "tracked files only"
+        typer.secho(
+            f"respecting .gitignore (git repo detected; {mode})",
+            err=True,
+            fg=typer.colors.CYAN,
+        )
 
     planned = plan_crawl(src, output, file_types=file_types, git_files=git_files)
 
@@ -339,6 +389,7 @@ def crawl_cmd(
 
 @app.command("molt")
 def molt_cmd(
+    ctx: typer.Context,
     root: pathlib.Path = typer.Argument(pathlib.Path("."), help="Tree root."),
     dry_run: bool = typer.Option(
         False,
@@ -362,8 +413,9 @@ def molt_cmd(
     tree must pass `croc check` first. See README for the full syntax
     mapping.
     """
+    git_files = _file_filter_for(ctx, root)
     try:
-        actions = molt_tree(root, dry_run=dry_run)
+        actions = molt_tree(root, dry_run=dry_run, git_files=git_files)
     except OpError as e:
         typer.echo(f"molt FAILED: {e}", err=True)
         raise typer.Exit(code=1) from e
@@ -375,6 +427,7 @@ def molt_cmd(
 
 @app.command("refs")
 def refs_cmd(
+    ctx: typer.Context,
     root: pathlib.Path = typer.Argument(pathlib.Path("."), help="Tree root."),
     unresolved_only: bool = typer.Option(
         False,
@@ -388,8 +441,9 @@ def refs_cmd(
     health check before `init --adopt --migrate-refs`: anything printed
     as UNRESOLVED will become a SKIP-REF note during migration.
     """
+    git_files = _file_filter_for(ctx, root)
     try:
-        reports = scan_path_refs(root)
+        reports = scan_path_refs(root, git_files=git_files)
     except OpError as e:
         typer.echo(f"refs FAILED: {e}", err=True)
         raise typer.Exit(code=2) from e

@@ -1359,3 +1359,112 @@ class TestRefRegexCaptureGroups:
         assert m.group(1) == "foo"
         assert m.group(2) == "sec"
         assert m.group(3) == "D"
+
+
+# ---------------------------------------------------------------------------
+# git_files filter plumbing — Phase 2 of the tracked-files filter plan.
+# See thoughts/shared/plans/2026-04-22-tracked-files-filter.md.
+# ---------------------------------------------------------------------------
+
+
+class TestGitFilesFilter:
+    def test_adopt_tree_skips_filtered_files(self, tmp_path):
+        """A file outside the filter set is neither scaffolded nor
+        augmented — `adopt_tree` acts as if it doesn't exist."""
+        (tmp_path / "tracked.md").write_text("# tracked, no frontmatter\n")
+        (tmp_path / "draft.md").write_text("# draft, no frontmatter\n")
+        allowed = {(tmp_path / "tracked.md").resolve()}
+
+        actions = adopt_tree(tmp_path, dry_run=True, git_files=allowed)
+        files_touched = " ".join(actions)
+        assert "tracked.md" in files_touched
+        assert "draft.md" not in files_touched
+
+    def test_adopt_tree_none_filter_walks_everything(self, tmp_path):
+        """Sanity: unfiltered behavior unchanged."""
+        (tmp_path / "a.md").write_text("# a\n")
+        (tmp_path / "b.md").write_text("# b\n")
+        actions = adopt_tree(tmp_path, dry_run=True)
+        files_touched = " ".join(actions)
+        assert "a.md" in files_touched
+        assert "b.md" in files_touched
+
+    def test_scan_path_refs_respects_filter(self, tmp_path):
+        """Refs in filtered-out files aren't reported."""
+        (tmp_path / "a.md").write_text("[link](./b.md)\n")
+        (tmp_path / "b.md").write_text("stub\n")
+        (tmp_path / "draft.md").write_text("[stale](./missing.md)\n")
+
+        allowed = {
+            (tmp_path / "a.md").resolve(),
+            (tmp_path / "b.md").resolve(),
+        }
+        reports = scan_path_refs(tmp_path, git_files=allowed)
+        sources = {r.source for r in reports}
+        assert "a.md" in sources
+        assert "draft.md" not in sources
+
+    def test_molt_tree_filters_via_assert_sound(self, write_doc, tmp_path):
+        """A draft with invalid frontmatter would normally block molt
+        (via `_assert_sound`). With the filter, the draft is out-of-
+        scope and molt proceeds."""
+        write_doc(tmp_path, "good.md", "good", body="plain body")
+        (tmp_path / ".croc.toml").write_text("")
+        # Without the filter, this broken file would fail pre-check.
+        (tmp_path / "draft.md").write_text("---\nunterminated")
+
+        allowed = {
+            (tmp_path / "good.md").resolve(),
+            (tmp_path / ".croc.toml").resolve(),
+        }
+        actions = molt_tree(tmp_path, dry_run=True, git_files=allowed)
+        # Success = no OpError. Actions should mention only tracked
+        # files (plus the marker removal).
+        joined = " ".join(actions)
+        assert "draft.md" not in joined
+
+    def test_rename_filters_via_assert_sound(self, write_doc, tmp_path):
+        """Rename respects the filter: drafts outside the set are not
+        loaded, checked, or rewritten."""
+        write_doc(
+            tmp_path,
+            "self.md",
+            "self",
+            kind="self",
+            body="plain",
+        )
+        (tmp_path / ".croc.toml").write_text("")
+        # Draft with stale id-ref and broken frontmatter — would both
+        # be rewritten and block pre-check if the filter didn't exclude it.
+        (tmp_path / "draft.md").write_text("---\nbroken\n[[id:self]]")
+
+        allowed = {
+            (tmp_path / "self.md").resolve(),
+            (tmp_path / ".croc.toml").resolve(),
+        }
+        # Should not raise — broken draft is out-of-scope.
+        changed = rename_id(tmp_path, "self", "renamed", dry_run=True, git_files=allowed)
+        # Only self.md is in scope; it has no refs to rewrite but its
+        # own id changes in-place. The dry-run path returns the rename
+        # plan; the draft is absent.
+        paths = {str(p) for p in changed}
+        assert "draft.md" not in paths
+
+    def test_move_filters_via_assert_sound(self, write_doc, tmp_path):
+        """Move uses `_assert_sound` for the pre-check. Filter scopes it."""
+        write_doc(tmp_path, "notes/a.md", "a", body="plain")
+        (tmp_path / ".croc.toml").write_text("")
+        (tmp_path / "draft.md").write_text("---\nbroken")
+
+        allowed = {
+            (tmp_path / "notes/a.md").resolve(),
+            (tmp_path / ".croc.toml").resolve(),
+        }
+        # Without the filter, the broken draft would fail pre-check.
+        move_file(
+            tmp_path,
+            tmp_path / "notes/a.md",
+            tmp_path / "moved.md",
+            dry_run=True,
+            git_files=allowed,
+        )

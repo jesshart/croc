@@ -11,11 +11,18 @@ CLI-surface tests live in test_cli.py.
 from __future__ import annotations
 
 import pathlib
+import subprocess
 
 import yaml
 
 from croc.check import check, load_tree
-from croc.crawl import build_crawl, plan_crawl
+from croc.crawl import (
+    build_crawl,
+    list_git_files,
+    list_tracked_only_files,
+    plan_crawl,
+    resolve_file_filter,
+)
 from croc.ops import adopt_tree, init_tree, molt_tree
 
 
@@ -105,6 +112,79 @@ def test_skip_dot_and_pycache_dirs(tmp_path: pathlib.Path) -> None:
     planned = plan_crawl(src, tmp_path / "out")
     paths = {p.relative_to(tmp_path / "out").as_posix() for p, _ in planned}
     assert paths == {"self.md", "a.md"}
+
+
+def _init_repo(root: pathlib.Path) -> None:
+    """Set up a minimal git repo inside `root`, with a stable identity
+    so `git commit` works in CI where user.name/email may be unset."""
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
+
+
+def test_list_tracked_only_returns_none_outside_repo(tmp_path: pathlib.Path) -> None:
+    """Outside a git repo, the helper signals 'no filter' with None,
+    matching list_git_files' existing shape."""
+    assert list_tracked_only_files(tmp_path) is None
+
+
+def test_list_tracked_only_excludes_untracked(tmp_path: pathlib.Path) -> None:
+    """tracked-only returns just `git ls-files` — drafts are absent."""
+    _init_repo(tmp_path)
+    (tmp_path / "tracked.md").write_text("# tracked")
+    subprocess.run(["git", "add", "tracked.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    (tmp_path / "draft.md").write_text("# draft")  # untracked, not ignored
+
+    tracked_only = list_tracked_only_files(tmp_path)
+    all_non_ignored = list_git_files(tmp_path)
+
+    assert tracked_only is not None
+    assert all_non_ignored is not None
+    assert (tmp_path / "tracked.md").resolve() in tracked_only
+    assert (tmp_path / "draft.md").resolve() not in tracked_only
+    assert (tmp_path / "draft.md").resolve() in all_non_ignored
+    assert tracked_only.issubset(all_non_ignored)
+
+
+def test_list_tracked_only_excludes_ignored(tmp_path: pathlib.Path) -> None:
+    """Ignored files never surface in either helper — envelope invariant."""
+    _init_repo(tmp_path)
+    (tmp_path / ".gitignore").write_text("ignored.md\n")
+    (tmp_path / "tracked.md").write_text("# tracked")
+    subprocess.run(["git", "add", ".gitignore", "tracked.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    (tmp_path / "ignored.md").write_text("# ignored")
+
+    tracked_only = list_tracked_only_files(tmp_path)
+    all_non_ignored = list_git_files(tmp_path)
+
+    assert tracked_only is not None
+    assert all_non_ignored is not None
+    assert (tmp_path / "ignored.md").resolve() not in tracked_only
+    assert (tmp_path / "ignored.md").resolve() not in all_non_ignored
+
+
+def test_resolve_file_filter_dispatches_on_flag(tmp_path: pathlib.Path) -> None:
+    """resolve_file_filter picks the right helper based on the flag."""
+    _init_repo(tmp_path)
+    (tmp_path / "tracked.md").write_text("# tracked")
+    subprocess.run(["git", "add", "tracked.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    (tmp_path / "draft.md").write_text("# draft")
+
+    default = resolve_file_filter(tmp_path, include_untracked=False)
+    widened = resolve_file_filter(tmp_path, include_untracked=True)
+
+    assert default == list_tracked_only_files(tmp_path)
+    assert widened == list_git_files(tmp_path)
+
+
+def test_resolve_file_filter_outside_repo_returns_none(tmp_path: pathlib.Path) -> None:
+    """Outside a git repo, both branches return None (no filter)."""
+    assert resolve_file_filter(tmp_path, include_untracked=False) is None
+    assert resolve_file_filter(tmp_path, include_untracked=True) is None
 
 
 def test_has_git_files_no_sibling_prefix_bug(tmp_path: pathlib.Path) -> None:

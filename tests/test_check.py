@@ -32,6 +32,32 @@ class TestLoadTree:
         docs = load_tree(sample_tree)
         assert sorted(d.id for d in docs) == ["obsidian", "registry", "self"]
 
+    def test_git_files_filter_excludes_nonmembers(self, sample_tree):
+        """With a git_files set, docs outside the set are silently
+        skipped — not parsed, not errored."""
+        allowed = {(sample_tree / "design/self.md").resolve()}
+        docs = load_tree(sample_tree, git_files=allowed)
+        assert [d.id for d in docs] == ["self"]
+
+    def test_git_files_none_walks_everything(self, sample_tree):
+        """`git_files=None` is the documented 'no filter' sentinel."""
+        docs = load_tree(sample_tree, git_files=None)
+        assert sorted(d.id for d in docs) == ["obsidian", "registry", "self"]
+
+    def test_git_files_filter_skips_before_parse(self, sample_tree):
+        """A filtered-out file with broken frontmatter must not fail
+        the load — that's the whole point of the filter."""
+        broken = sample_tree / "design/broken.md"
+        broken.write_text("---\nunterminated")
+        # Include only the three valid docs; `broken.md` is excluded.
+        allowed = {
+            (sample_tree / "design/self.md").resolve(),
+            (sample_tree / "patterns/registry.md").resolve(),
+            (sample_tree / "notes/obsidian.md").resolve(),
+        }
+        docs = load_tree(sample_tree, git_files=allowed)
+        assert sorted(d.id for d in docs) == ["obsidian", "registry", "self"]
+
 
 class TestParseFrontmatter:
     def test_missing_frontmatter(self, tmp_path):
@@ -203,4 +229,32 @@ class TestSymlinks:
         main.mkdir()
         (main / "linked").symlink_to(external)
         warnings = scan_symlinks(main)
+        assert any("not traversed" in w for w in warnings)
+
+    def test_symlink_outside_filter_is_ignored(self, tmp_path):
+        """A symlink the user excluded from their tree shouldn't warn."""
+        external = tmp_path / "external"
+        external.mkdir()
+        main = tmp_path / "main"
+        main.mkdir()
+        (main / "linked").symlink_to(external)
+        # Filter set excludes the symlink. It resolves to external/,
+        # not to itself, so it would only match the set if the set
+        # contained external/ — which it doesn't.
+        warnings = scan_symlinks(main, git_files=set())
+        assert warnings == []
+
+    def test_symlink_inside_filter_still_warns(self, tmp_path):
+        """Symlinks the filter DOES include continue to warn, mirroring
+        the in-repo behavior where `git ls-files` reports the symlink
+        and its resolved path lands in `git_files`."""
+        external = tmp_path / "external"
+        external.mkdir()
+        main = tmp_path / "main"
+        main.mkdir()
+        link = main / "linked"
+        link.symlink_to(external)
+        # Replicate list_git_files' shape: each tracked entry is resolved.
+        git_files = {link.resolve()}
+        warnings = scan_symlinks(main, git_files=git_files)
         assert any("not traversed" in w for w in warnings)

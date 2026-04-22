@@ -139,7 +139,9 @@ def list_git_files(directory: pathlib.Path) -> set[pathlib.Path] | None:
 
     The union of `ls-files` and `ls-files --others --exclude-standard`
     gives us everything git would include in a snapshot, i.e. exactly
-    the files a user considers part of the project.
+    the files a user considers part of the project. Use this when the
+    caller wants "everything not ignored" — includes in-progress
+    drafts that haven't been `git add`ed yet.
     """
     try:
         tracked = subprocess.run(
@@ -169,6 +171,51 @@ def list_git_files(directory: pathlib.Path) -> set[pathlib.Path] | None:
             if line:
                 files.add((directory / line).resolve())
     return files
+
+
+def list_tracked_only_files(directory: pathlib.Path) -> set[pathlib.Path] | None:
+    """Files git is actively tracking under `directory`. Returns a set
+    of absolute resolved paths, or `None` if we're not inside a git
+    repo (or `git` is unavailable).
+
+    Narrower than `list_git_files`: drafts (untracked-but-not-ignored
+    files) are excluded. Use when the caller wants "files committed to
+    the project," not "files the user is working on."
+    """
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            capture_output=True,
+            text=True,
+            cwd=directory,
+        )
+    except FileNotFoundError:
+        return None
+    if tracked.returncode != 0:
+        return None
+
+    files: set[pathlib.Path] = set()
+    for line in tracked.stdout.strip().splitlines():
+        if line:
+            files.add((directory / line).resolve())
+    return files
+
+
+def resolve_file_filter(
+    directory: pathlib.Path,
+    *,
+    include_untracked: bool,
+) -> set[pathlib.Path] | None:
+    """Pick the right git-backed file filter for this invocation.
+
+    Returns `None` when `directory` is not in a git repo — callers
+    should treat `None` as "no filter; walk everything." The two
+    branches correspond to the CLI's `--include-untracked` /
+    `--no-include-untracked` (default) flag pair.
+    """
+    if include_untracked:
+        return list_git_files(directory)
+    return list_tracked_only_files(directory)
 
 
 # ---------------------------------------------------------------------------

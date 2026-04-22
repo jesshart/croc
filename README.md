@@ -139,7 +139,7 @@ croc crawl src/ --adopt
 croc crawl src/ --file-types .py --file-types .ts
 ```
 
-**Default discovery** mirrors every file git tracks. Dot-prefixed directories (`.git`, `.venv`, ...) and `__pycache__` are always pruned. `.gitignore` is honored automatically when run inside a git repo; for repos without `.gitignore` discipline, use `--file-types` to narrow.
+**Default discovery** mirrors every file git is actively tracking (`git ls-files`). Dot-prefixed directories (`.git`, `.venv`, ...) and `__pycache__` are always pruned. `.gitignore` is honored automatically when run inside a git repo; for repos without `.gitignore` discipline, use `--file-types` to narrow. Pass the global `--include-untracked` flag to also mirror draft files you haven't `git add`ed yet.
 
 **Two-step vs one-step.** The default two-step flow — `croc crawl src/` then `croc init --adopt thoughts/src/` — gives you a plain-markdown tree you can edit by hand before adopting. The one-step `--adopt` variant is for cases where you just want a croc-checkable tree immediately. Both are idempotent; re-running is a no-op unless `--force` is passed.
 
@@ -196,6 +196,28 @@ Link text and anchors are preserved. Frontmatter `links` gets a strong entry for
 ### `--dry-run`
 
 Every mutating command (`move`, `rename`, `init --adopt`, `init --adopt --migrate-refs`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
+
+### `--include-untracked` / `--no-include-untracked` (global)
+
+Global flag — name mirrors `git stash --include-untracked`. Controls which files croc considers when walking a tree. Takes effect only inside a git repo.
+
+| Mode | Files walked |
+| ---- | ------------ |
+| Default (`--no-include-untracked`) | Tracked only — what `git ls-files` returns. Drafts you haven't `git add`ed yet are skipped. |
+| `--include-untracked` | Tracked + untracked-but-not-ignored. Useful while drafting new docs before committing. |
+| Outside a git repo | Flag has no effect; every file is walked. |
+
+Gitignored files are never touched when the walk is git-backed — same envelope in both modes. Applies to `check`, `index`, `move`, `rename`, `init --adopt`, `crawl`, `molt`, and `refs`.
+
+```bash
+# Default: only tracked files considered
+croc check thoughts/
+
+# Include in-progress drafts in the check
+croc --include-untracked check thoughts/
+```
+
+Note: `rename` follows the same scope. Refs inside a filtered-out draft are **not** rewritten, so a draft containing `[[id:old]]` will still reference `old` after `croc rename old new`. Re-run with `--include-untracked` to update drafts, or let `check` catch the dangling ref when you eventually add the draft.
 
 ## Concepts
 

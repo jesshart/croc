@@ -6,6 +6,26 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Added
+
+- **`--include-untracked` / `--no-include-untracked`** global flag
+  (name mirrors `git stash --include-untracked`). Applies to every
+  tree-walking command — `check`, `index`, `move`, `rename`,
+  `init --adopt`, `crawl`, `molt`, `refs`. Inside a git repo the
+  default narrows the walk to tracked files only (`git ls-files`),
+  skipping in-progress drafts. Pass `--include-untracked` to fold
+  drafts back in. Gitignored files are always excluded when the walk
+  is git-backed. Outside a git repo, the flag is a no-op and every
+  file is walked (unchanged).
+
+### Changed
+
+- **`croc crawl` default discovery narrowed.** Previously mirrored
+  every non-ignored file (tracked + untracked-but-not-ignored). Now
+  mirrors tracked files only by default, matching the new global
+  flag's semantics. Pass `--include-untracked` to restore prior
+  behavior.
+
 ## 0.3.0 — 2026-04-20
 
 ### Added

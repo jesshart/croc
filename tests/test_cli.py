@@ -195,3 +195,145 @@ def test_crawl_existing_files_noted_on_stderr(
     assert second.exit_code == 0
     assert "existing file(s) kept" in second.stderr
     assert "crawl OK (0 actions)" in second.stdout
+
+
+# ---------------------------------------------------------------------------
+# --include-untracked / --no-include-untracked global flag
+#
+# These exercise the CLI-level contract: the flag is global, the default
+# narrows tree-walks to `git ls-files`, and `--include-untracked` widens
+# to tracked + untracked-but-not-ignored (drafts).
+#
+# See thoughts/shared/plans/2026-04-22-tracked-files-filter.md.
+# ---------------------------------------------------------------------------
+
+
+def _init_repo_with_draft(root: pathlib.Path) -> None:
+    """Set up a throwaway git repo with:
+      - `thoughts/tracked.md` — tracked, plain markdown
+      - `thoughts/draft.md`   — untracked, not ignored, plain markdown
+    Caller uses this tree to observe filter behavior."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
+    (root / "thoughts").mkdir()
+    (root / "thoughts" / "tracked.md").write_text("# tracked\n")
+    subprocess.run(["git", "add", "thoughts/tracked.md"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
+    (root / "thoughts" / "draft.md").write_text("# draft\n")
+
+
+def test_global_flag_appears_in_help(runner: CliRunner) -> None:
+    """The flag is documented at the app level, not per-command."""
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "--include-untracked" in result.output
+    assert "--no-include-untracked" in result.output
+
+
+def test_init_adopt_default_skips_drafts(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Default (tracked-only): `init --adopt` augments tracked files, not drafts."""
+    _init_repo_with_draft(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["init", "--adopt", "--dry-run", "thoughts"])
+    assert result.exit_code == 0, result.output
+    assert "tracked.md" in result.stdout
+    assert "draft.md" not in result.stdout
+
+
+def test_init_adopt_include_untracked_covers_drafts(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
+    """With --include-untracked, drafts are folded in."""
+    _init_repo_with_draft(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["--include-untracked", "init", "--adopt", "--dry-run", "thoughts"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "tracked.md" in result.stdout
+    assert "draft.md" in result.stdout
+
+
+def test_refs_default_skips_drafts(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
+    """`refs` walks only tracked files by default."""
+    _init_repo_with_draft(tmp_path)
+    # Give each file a path-ref so `refs` produces output.
+    (tmp_path / "thoughts" / "tracked.md").write_text("see [link](./tracked.md)\n")
+    (tmp_path / "thoughts" / "draft.md").write_text("see [link](./tracked.md)\n")
+    import subprocess
+
+    subprocess.run(["git", "add", "thoughts/tracked.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "update"], cwd=tmp_path, check=True)
+
+    monkeypatch.chdir(tmp_path)
+    default = runner.invoke(app, ["refs", "thoughts"])
+    assert default.exit_code == 0, default.output
+    assert "tracked.md" in default.stdout
+    assert "draft.md" not in default.stdout
+
+    widened = runner.invoke(app, ["--include-untracked", "refs", "thoughts"])
+    assert widened.exit_code == 0, widened.output
+    assert "draft.md" in widened.stdout
+
+
+def test_check_default_skips_draft_with_broken_frontmatter(
+    runner: CliRunner, tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """A malformed draft doesn't crash `check` at the default — it's
+    out-of-scope. With --include-untracked, the same file fails."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True)
+    (tmp_path / "thoughts").mkdir()
+    good = tmp_path / "thoughts" / "good.md"
+    good.write_text("---\nid: good\ntitle: t\nkind: leaf\nlinks: []\n---\nbody\n")
+    subprocess.run(["git", "add", "thoughts/good.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+    (tmp_path / "thoughts" / "draft.md").write_text("---\nunterminated")
+
+    monkeypatch.chdir(tmp_path)
+    default = runner.invoke(app, ["check", "thoughts"])
+    assert default.exit_code == 0, default.output
+
+    widened = runner.invoke(app, ["--include-untracked", "check", "thoughts"])
+    assert widened.exit_code != 0
+
+
+def test_outside_git_repo_flag_is_noop(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Outside a git repo, flag has no effect — all files walked either way."""
+    (tmp_path / "thoughts").mkdir()
+    (tmp_path / "thoughts" / "a.md").write_text("# a\n")
+    (tmp_path / "thoughts" / "b.md").write_text("# b\n")
+
+    monkeypatch.chdir(tmp_path)
+    default = runner.invoke(app, ["init", "--adopt", "--dry-run", "thoughts"])
+    widened = runner.invoke(app, ["--include-untracked", "init", "--adopt", "--dry-run", "thoughts"])
+    assert default.exit_code == 0
+    assert widened.exit_code == 0
+    assert "a.md" in default.stdout and "b.md" in default.stdout
+    assert "a.md" in widened.stdout and "b.md" in widened.stdout
+
+
+def test_crawl_mode_note_reflects_default(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
+    """The stderr 'respecting .gitignore' note names which mode ran."""
+    _init_repo_with_draft(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    default = runner.invoke(app, ["crawl", "thoughts", "-o", "out-default", "--dry-run"])
+    assert default.exit_code == 0, default.output
+    assert "tracked files only" in default.stderr
+
+    widened = runner.invoke(
+        app,
+        ["--include-untracked", "crawl", "thoughts", "-o", "out-wide", "--dry-run"],
+    )
+    assert widened.exit_code == 0, widened.output
+    assert "including untracked drafts" in widened.stderr
