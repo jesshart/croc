@@ -226,8 +226,14 @@ def _init_repo_with_draft(root: pathlib.Path) -> None:
     (root / "thoughts" / "draft.md").write_text("# draft\n")
 
 
-def test_global_flag_appears_in_help(runner: CliRunner) -> None:
-    """The flag is documented at the app level, not per-command."""
+def test_global_flag_appears_in_help(runner: CliRunner, monkeypatch) -> None:
+    """The flag is documented at the app level, not per-command.
+
+    Forces a wide terminal so Typer doesn't wrap `--include-untracked`
+    into `--include-\nuntracked` (which defeats a naive substring
+    check). CI runs at 80 columns by default.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "--include-untracked" in result.output
