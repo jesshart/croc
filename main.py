@@ -9,6 +9,7 @@ import typer
 
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
 from croc.crawl import apply_plan, plan_crawl, resolve_file_filter
+from croc.lurk import lurk_tree
 from croc.ops import (
     OpError,
     adopt_tree,
@@ -462,6 +463,52 @@ def refs_cmd(
     if unresolved_count:
         typer.echo(f"\n{unresolved_count} unresolved ref(s) across the tree", err=True)
         raise typer.Exit(code=1)
+
+
+@app.command("lurk")
+def lurk_cmd(
+    ctx: typer.Context,
+    root: pathlib.Path = typer.Argument(
+        pathlib.Path("thoughts"),
+        help="Root of the documentation tree.",
+    ),
+    max_lines: int = typer.Option(
+        100,
+        "-n",
+        "--max-lines",
+        help="Reject any `.md` file whose line count exceeds this. Default 100.",
+    ),
+    include_frontmatter: bool = typer.Option(
+        False,
+        "--include-frontmatter/--no-include-frontmatter",
+        help=(
+            "Count YAML frontmatter toward the line budget. Default "
+            "excludes frontmatter so a doc isn't penalized for a rich "
+            "`links:` block."
+        ),
+    ),
+) -> None:
+    """Report `.md` files exceeding a per-file line-count budget."""
+    git_files = _file_filter_for(ctx, root)
+    violations = lurk_tree(
+        root,
+        max_lines=max_lines,
+        include_frontmatter=include_frontmatter,
+        git_files=git_files,
+    )
+    for v in violations:
+        over_by = v.line_count - v.limit
+        typer.secho(
+            f"{v.path}: {v.line_count} lines (over by {over_by})",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+    n = len(violations)
+    plural = "" if n == 1 else "s"
+    if n:
+        typer.echo(f"\n{n} file{plural} exceed {max_lines} lines", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"lurk OK (0 file{plural} exceed {max_lines} lines)")
 
 
 def main() -> None:

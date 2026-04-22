@@ -350,3 +350,82 @@ def test_crawl_mode_note_reflects_default(runner: CliRunner, tmp_path: pathlib.P
     )
     assert widened.exit_code == 0, widened.output
     assert "including untracked drafts" in widened.stderr
+
+
+# ---------------------------------------------------------------------------
+# lurk — per-file line-count budget
+#
+# See thoughts/shared/plans/2026-04-22-lurk-max-lines.md.
+# ---------------------------------------------------------------------------
+
+
+def test_lurk_command_registered() -> None:
+    """The `lurk` subcommand exists on the app. Introspect Typer's
+    command registry directly — same rationale as the global-flag
+    test above (Rich wraps help output; substring scans are brittle)."""
+    import typer.main
+
+    click_group = typer.main.get_command(app)
+    assert "lurk" in click_group.commands
+
+
+def test_lurk_clean_tree_exits_zero(runner: CliRunner, tmp_path: pathlib.Path) -> None:
+    (tmp_path / "small.md").write_text("line\n" * 20)
+    result = runner.invoke(app, ["lurk", str(tmp_path), "-n", "100"])
+    assert result.exit_code == 0
+    assert "lurk OK" in result.stdout
+
+
+def test_lurk_reports_violator_on_stderr_and_exits_one(runner: CliRunner, tmp_path: pathlib.Path) -> None:
+    """Violation lines on stderr, summary line on stderr, exit 1."""
+    (tmp_path / "big.md").write_text("line\n" * 150)
+    (tmp_path / "small.md").write_text("line\n" * 10)
+    result = runner.invoke(app, ["lurk", str(tmp_path), "-n", "100"])
+    assert result.exit_code == 1
+    assert "big.md" in result.stderr
+    assert "150 lines" in result.stderr
+    assert "over by 50" in result.stderr
+    # Summary pluralization for 1 file: no trailing "s"
+    assert "1 file exceed" in result.stderr
+    assert "small.md" not in result.stderr
+
+
+def test_lurk_higher_limit_clears_violation(runner: CliRunner, tmp_path: pathlib.Path) -> None:
+    """Same tree, bigger `-n` — no violation."""
+    (tmp_path / "big.md").write_text("line\n" * 150)
+    result = runner.invoke(app, ["lurk", str(tmp_path), "-n", "200"])
+    assert result.exit_code == 0
+
+
+def test_lurk_include_frontmatter_changes_count(runner: CliRunner, tmp_path: pathlib.Path) -> None:
+    """A doc with a 30-line frontmatter `links:` block plus an 80-line
+    body sits under 100 by default, over 100 with --include-frontmatter."""
+    body = "content\n" * 80
+    links = "\n".join(f"  - to: id{i}" for i in range(25))
+    (tmp_path / "doc.md").write_text(f"---\nid: big\ntitle: t\nkind: leaf\nlinks:\n{links}\n---\n\n{body}")
+
+    default = runner.invoke(app, ["lurk", str(tmp_path), "-n", "100"])
+    assert default.exit_code == 0, default.output
+
+    inclusive = runner.invoke(app, ["lurk", "--include-frontmatter", str(tmp_path), "-n", "100"])
+    assert inclusive.exit_code == 1, inclusive.output
+    assert "doc.md" in inclusive.stderr
+
+
+def test_lurk_respects_include_untracked(runner: CliRunner, tmp_path: pathlib.Path, monkeypatch) -> None:
+    """Untracked `draft.md` (200 lines) is skipped by default, flagged
+    with --include-untracked."""
+    _init_repo_with_draft(tmp_path)
+    # Draft is 200 lines → would violate if included.
+    (tmp_path / "thoughts" / "draft.md").write_text("line\n" * 200)
+    # Keep tracked.md below threshold.
+    (tmp_path / "thoughts" / "tracked.md").write_text("line\n" * 20)
+    monkeypatch.chdir(tmp_path)
+
+    default = runner.invoke(app, ["lurk", "thoughts", "-n", "100"])
+    assert default.exit_code == 0, default.output
+    assert "draft.md" not in default.stderr
+
+    widened = runner.invoke(app, ["--include-untracked", "lurk", "thoughts", "-n", "100"])
+    assert widened.exit_code == 1, widened.output
+    assert "draft.md" in widened.stderr

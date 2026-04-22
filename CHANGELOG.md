@@ -6,6 +6,19 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Added
+
+- **`croc lurk [root] [-n/--max-lines N]`** — report any `.md` file
+  whose line count exceeds `N` (default `100`). One line per
+  violator on stderr; exit 1 if any file is over budget. YAML
+  frontmatter is excluded from the count by default; pass
+  `--include-frontmatter` for a literal whole-file count. Honors
+  the global `--include-untracked` flag. Works on any markdown
+  tree (no croc frontmatter required). Philosophy: small docs +
+  id-based refs is the croc design, and `lurk` makes that
+  editorial take machine-checkable — drop it in CI next to
+  `croc check`.
+
 ## 0.4.0 — 2026-04-22
 
 ### Added

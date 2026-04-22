@@ -173,6 +173,21 @@ croc refs --unresolved path/to/docs/
 
 Exits 1 when any ref is unresolved. Great for CI on partially-migrated trees.
 
+### `croc lurk <root> [-n N] [--include-frontmatter]`
+
+Reports any `.md` file whose line count exceeds `N` (default `100`). Opinionated guardrail: small docs + id-based refs is the croc design; one 800-line doc defeats the grain the borrow checker rewards. `lurk` makes that editorial take machine-checkable.
+
+```bash
+croc lurk thoughts/
+# thoughts/onboarding/deep-dive.md: 287 lines (over by 187)
+#
+# 1 file exceed 100 lines
+```
+
+YAML frontmatter is **excluded** from the count by default — a doc with a rich `links:` block shouldn't eat its budget on schema overhead. Pass `--include-frontmatter` for a literal whole-file count.
+
+Works on any markdown tree, adopted or not (no frontmatter required). Honors the global `--include-untracked` flag. Exits 1 on any violation, matching the `check` contract — drop it into CI next to `croc check` for enforcement.
+
 ### Ref migration (on `init --adopt`, default on)
 
 Adoption rewrites markdown path refs in body text to the croc dialect by default:
