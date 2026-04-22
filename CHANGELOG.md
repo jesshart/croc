@@ -6,6 +6,8 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.4.0 — 2026-04-22
+
 ### Added
 
 - **`--include-untracked` / `--no-include-untracked`** global flag

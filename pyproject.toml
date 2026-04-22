@@ -2,7 +2,7 @@
 # PyPI distribution name. `croc` is taken by an unrelated scientific
 # package; the import name and CLI command are still `croc`.
 name = "croc-cli"
-version = "0.3.0"
+version = "0.4.0"
 description = "A Rust-inspired, Typer-powered CLI for reliably managing project documentation."
 readme = "README.md"
 requires-python = ">=3.13"
