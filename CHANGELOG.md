@@ -6,6 +6,44 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Added
+
+- **`croc attack [root] [--dry-run] [--strict-traces]`** — scan source
+  files for regex patterns declared in `.croc.toml` `[[trace]]` entries
+  and record matching source paths in each target doc's `tracks:`
+  frontmatter list. Target is resolved by filename stem (capture
+  `"revenue"` → `revenue.md`), which works on adopted and unadopted
+  trees alike. Paths are relative to the git repo root so they line up
+  with `git diff --name-only` for `hunt`. Unresolved / ambiguous
+  captures emit `SKIP-TRACE` notes; pass `--strict-traces` to fail the
+  run when any appear. Idempotent: re-running re-derives `tracks:` from
+  scratch, so refactored-away patterns drop from doc frontmatter
+  automatically. Requires a git repo.
+- **`croc hunt [root] [--base REF] [--forgiving/--strict]`** — alert
+  when any doc's `tracks:` entry appears in a git diff. Default diff
+  scope is staged changes (`--cached`); `--base REF` switches to
+  `REF...HEAD` for CI use. `--strict` (default) alerts on any tracked
+  source change; `--forgiving` suppresses the alert when the bound doc
+  is itself in the diff. Exit 1 on any alerts. Designed as a pre-commit
+  hook or CI step; mode can also be set via `[hunt] strict = ...` in
+  `.croc.toml`.
+- **`.croc.toml` is now a config file, not just a marker.** Holds
+  `[[trace]]` entries (regex + code globs) consumed by `attack` / `hunt`,
+  plus an optional `[hunt]` table (`strict = true/false`). Validated at
+  load time: every regex must compile and have exactly one capture
+  group. Foreign keys are preserved through the adopt / molt lifecycle.
+
+### Changed
+
+- **`croc molt` preserves foreign `.croc.toml` config.** Previously it
+  deleted the file unconditionally. Now it strips only the `version`
+  marker (symmetric with how molt strips `id`/`kind`/`links` from
+  frontmatter while preserving foreign fields). If nothing remains, the
+  file is still deleted — preserving today's behavior for marker-only
+  files. `croc init --adopt` re-adds the marker ahead of any surviving
+  config on re-adoption. Action log prints `REWRITE .croc.toml` when
+  config survives, `REMOVE .croc.toml` when it's marker-only.
+
 ### Fixed
 
 - **`croc crawl` silently collapsed same-stem siblings into one output.**

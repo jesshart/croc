@@ -1,2 +1,7 @@
 # croc tree root marker.
 version = "0.1"
+
+[[trace]]
+name = "persist_parquet"
+pattern = '''persist_parquet\(["']([^"']+)["']\)'''
+code_globs = ["examples/thoughts-from-code/src/**/*.py"]

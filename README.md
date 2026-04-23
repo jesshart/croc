@@ -188,6 +188,78 @@ YAML frontmatter is **excluded** from the count by default — a doc with a rich
 
 Works on any markdown tree, adopted or not (no frontmatter required). Honors the global `--include-untracked` flag. Exits 1 on any violation, matching the `check` contract — drop it into CI next to `croc check` for enforcement.
 
+### `croc attack <root> [--dry-run] [--strict-traces]`
+
+Scans source files for user-declared regex patterns in `.croc.toml` `[[trace]]` entries. Each match's capture group is resolved to a `.md` file by filename stem (`"revenue"` → `revenue.md`), and the source path is recorded in that doc's `tracks:` frontmatter list.
+
+```toml
+# .croc.toml at the tree root
+version = "0.1"
+
+[[trace]]
+name = "persist_parquet"
+pattern = '''persist_parquet\(["']([^"']+)["']\)'''
+code_globs = ["src/**/*.py"]
+```
+
+```bash
+croc attack thoughts/
+# ATTACK revenue.md (tracks: src/producer.py)
+# attack OK (1 action)
+```
+
+**Resolution by stem** means `attack` works on adopted and unadopted trees alike — the filename is the handle, not the `id`. Each `[[trace]]` pattern must have exactly one capture group; config is rejected at load time otherwise. Paths written to `tracks:` are relative to the git repo root (`git rev-parse --show-toplevel`), which keeps them aligned with `git diff --name-only` for `croc hunt`.
+
+**Idempotent.** `attack` re-derives the full `tracks:` list from a fresh scan. Refactoring a `persist_parquet` call out of the code drops the corresponding track automatically; add a new call and the next run picks it up. Multiple patterns hitting the same doc from different source files all contribute (union); the same file contributing twice dedupes.
+
+**Unresolved / ambiguous captures** surface as `SKIP-TRACE` notes — a capture `"ghost"` with no `ghost.md` in the tree, or `"revenue"` with both `data/revenue.md` and `archive/revenue.md`, is reported but not written. Pass `--strict-traces` to exit non-zero when any notes appear (for CI).
+
+Requires a git repo (paths are repo-root-relative). Honors the global `--include-untracked` flag.
+
+### `croc hunt <root> [--base REF] [--forgiving/--strict]`
+
+Pre-commit / CI gate. Walks every `.md` with a `tracks:` field, compares each listed source path against `git diff --name-only`, and alerts when any bound source file has changed. Exits 1 on any alert.
+
+```bash
+croc hunt thoughts/
+# thoughts/revenue.md tracks changed file src/producer.py
+#
+# 1 alert (strict mode)
+```
+
+**Diff scope:**
+
+| Invocation                       | Diff computed                             | Use case      |
+| -------------------------------- | ----------------------------------------- | ------------- |
+| `croc hunt thoughts/`            | `git diff --cached --name-only` (staged)  | pre-commit    |
+| `croc hunt thoughts/ --base main`| `git diff --name-only main...HEAD` (range)| CI / PR gate  |
+
+**Strict vs forgiving:**
+
+- **Strict** (default): any tracked source in the diff → alert. The doc must be reviewed even if you also edited it in the same commit.
+- **Forgiving** (`--forgiving` flag, or `[hunt] strict = false` in `.croc.toml`): skip the alert when the bound doc itself is also in the diff — assumes you updated both together on purpose.
+
+CLI flags override the config default; `--strict` turns strictness back on when the config is set to forgiving.
+
+### I/O bindings
+
+Docs can declare a `tracks:` field in frontmatter — a list of source files whose contents are load-bearing for the doc. `croc attack` populates this field by scanning code for user-declared regex patterns; `croc hunt` alerts when any tracked file has changed in a git diff and the bound doc hasn't.
+
+```yaml
+---
+id: revenue
+title: Revenue
+kind: leaf
+links: []
+tracks:
+  - src/producer.py
+---
+```
+
+The binding is deliberately narrow: `tracks:` points at files *outside* the tree (code, configs, schemas), never other docs — `links:` handles doc-to-doc refs, and the five rules govern that seam. Treat `tracks:` as the same kind of contract as a strong ref, but for the code-to-doc seam.
+
+`tracks:` is a foreign field from the perspective of adopt/molt. It survives the full lifecycle untouched — `molt` preserves it alongside `mirrors:`, `title`, and any other non-croc key.
+
 ### Ref migration (on `init --adopt`, default on)
 
 Adoption rewrites markdown path refs in body text to the croc dialect by default:
@@ -210,7 +282,7 @@ Link text and anchors are preserved. Frontmatter `links` gets a strong entry for
 
 ### `--dry-run`
 
-Every mutating command (`move`, `rename`, `init --adopt`, `init --adopt --migrate-refs`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
+Every mutating command (`move`, `rename`, `init --adopt`, `init --adopt --migrate-refs`, `attack`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
 
 ### `--include-untracked` / `--no-include-untracked` (global)
 
@@ -222,7 +294,7 @@ Global flag — name mirrors `git stash --include-untracked`. Controls which fil
 | `--include-untracked` | Tracked + untracked-but-not-ignored. Useful while drafting new docs before committing. |
 | Outside a git repo | Flag has no effect; every file is walked. |
 
-Gitignored files are never touched when the walk is git-backed — same envelope in both modes. Applies to `check`, `index`, `move`, `rename`, `init --adopt`, `crawl`, `molt`, and `refs`.
+Gitignored files are never touched when the walk is git-backed — same envelope in both modes. Applies to `check`, `index`, `move`, `rename`, `init --adopt`, `crawl`, `molt`, `refs`, `lurk`, `attack`, and `hunt`.
 
 ```bash
 # Default: only tracked files considered
@@ -331,6 +403,23 @@ Or as a plain `.git/hooks/pre-commit`:
 #!/bin/sh
 uv run croc check path/to/docs/ || exit 1
 ```
+
+### Pre-commit hook for `croc hunt`
+
+Catch code changes that outpace their documentation. Add alongside `croc-check`:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: croc-hunt
+        name: croc hunt
+        entry: uv run croc hunt path/to/docs/
+        language: system
+        pass_filenames: false
+```
+
+`croc hunt` defaults to diffing against `--cached` (staged changes) which is what you want here; use `--base main` in CI pipelines instead.
 
 ### In GitHub Actions
 

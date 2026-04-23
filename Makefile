@@ -21,6 +21,8 @@ format:
 smoke:
 	uv run croc check examples/thoughts
 	uv run croc check examples/thoughts-from-code/thoughts
+	uv run croc --include-untracked attack examples/thoughts-from-code/thoughts --dry-run
+	uv run croc hunt examples/thoughts-from-code/thoughts
 
 # Manual fallback only — DO NOT USE for canonical releases.
 #
