@@ -535,8 +535,10 @@ The flow:
 3. Promote the `## Unreleased` section in [`CHANGELOG.md`](CHANGELOG.md) to `## X.Y.Z — YYYY-MM-DD`. Add a fresh empty `## Unreleased` above it.
 4. Commit as `chore(release): vX.Y.Z`. Duplicate the CHANGELOG section into the commit body so the commit stands alone.
 5. Push: `git push origin main`.
-6. Tag with the release notes in the annotation (not just `-m vX.Y.Z` — that leaves the GitHub Release body effectively empty): write the new CHANGELOG entry's body to a temp file and run `git tag -a vX.Y.Z --cleanup=verbatim -F notes.md && git push origin vX.Y.Z`. The tag annotation becomes the release body in the next step. `--cleanup=verbatim` is required to keep `##` markdown headers — without it, git strips any line starting with `#` as a comment.
+6. Tag with the full release notes in the annotation. Write the new CHANGELOG entry's body to a temp file, then: `git tag -a vX.Y.Z --cleanup=verbatim -F notes.md && git push origin vX.Y.Z`.
 7. Create the GitHub Release from the tag: `gh release create vX.Y.Z --notes-from-tag --title vX.Y.Z` (or use the web UI). Publication triggers the publish workflow.
+
+**Why steps 6 and 7 look like this.** `gh release create --notes-from-tag` copies the tag annotation verbatim into the release body, so the annotation *is* the release notes — `-m vX.Y.Z` produces an effectively empty release body (releases v0.4.0 through v0.6.0 shipped this way; their bodies are just the literal string "vX.Y.Z"). `-F notes.md` fills the annotation from a real file. `--cleanup=verbatim` is required to keep `##` markdown headers — without it, git strips every line starting with `#` as a comment, so your section structure disappears before it ever reaches GitHub.
 
 The `make pypi` target is a **manual fallback only**, not the canonical path. It runs `uv build && uv publish` locally and requires a PyPI token in the environment; it bypasses CI's clean build and the version/tag/changelog discipline above. Avoid it unless Trusted Publishing is down.
 
