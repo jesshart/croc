@@ -1320,6 +1320,226 @@ class TestMolt:
         assert "!!timestamp" not in content, f"unexpected type tag in: {content!r}"
 
 
+class TestAdoptMigrateRefsMasking:
+    """Masked path-refs (fenced code, inline code, escaped parens) are
+    documentation, not real refs. adopt --migrate-refs must skip them:
+    no migration, no SKIP-REF note, no frontmatter link."""
+
+    def test_fenced_path_ref_not_migrated(self, tmp_path):
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\nExample:\n\n```markdown\n[target](target.md)\n```\n")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        content = (tmp_path / "src.md").read_text()
+        # Fenced example preserved byte-for-byte
+        assert "```markdown\n[target](target.md)\n```" in content
+        # No frontmatter link materialized for a masked ref
+        fm, _ = parse_frontmatter(tmp_path / "src.md", content)
+        assert fm.get("links", []) == []
+        # No MIGRATE action for src.md (no real refs to migrate)
+        assert not any("MIGRATE src.md" in a for a in actions)
+
+    def test_inline_code_path_ref_not_migrated(self, tmp_path):
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\nLinks look like `[t](target.md)`.\n")
+        adopt_tree(tmp_path, migrate_refs=True)
+        content = (tmp_path / "src.md").read_text()
+        assert "`[t](target.md)`" in content
+        fm, _ = parse_frontmatter(tmp_path / "src.md", content)
+        assert fm.get("links", []) == []
+
+    def test_unresolvable_masked_path_ref_emits_no_skip_note(self, tmp_path):
+        """Masking preempts the SKIP-REF note — an example like
+        `(outputs.md)` in prose isn't a broken ref, it's documentation."""
+        (tmp_path / "src.md").write_text("# Src\n\nExample: `[x](outputs.md)`.\n")
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        assert not any(a.startswith("SKIP-REF") for a in actions)
+
+    def test_one_masked_one_real_migrates_only_the_real(self, tmp_path):
+        (tmp_path / "target.md").write_text("# Target\n")
+        (tmp_path / "src.md").write_text("# Src\n\nExample: `[t](target.md)`.\n\nReal: [t](target.md)\n")
+        adopt_tree(tmp_path, migrate_refs=True)
+        content = (tmp_path / "src.md").read_text()
+        # Masked occurrence preserved
+        assert "`[t](target.md)`" in content
+        # Real one migrated
+        assert "Real: [[id:target|t]]" in content
+        fm, _ = parse_frontmatter(tmp_path / "src.md", content)
+        assert any(link.get("to") == "target" for link in fm["links"])
+        assert check(load_tree(tmp_path)) == []
+
+    def test_managed_file_with_only_masked_path_refs_is_noop(self, tmp_path):
+        """A fully-managed doc whose only path-refs are masked should
+        NOT be re-planned as MIGRATE on a subsequent adopt run."""
+        (tmp_path / "target.md").write_text("---\nid: target\ntitle: Target\nkind: leaf\nlinks: []\n---\n# Target\n")
+        (tmp_path / "src.md").write_text(
+            "---\nid: src\ntitle: Src\nkind: leaf\nlinks: []\n---\n# Src\n\nExample: `[t](target.md)`.\n"
+        )
+        actions = adopt_tree(tmp_path, migrate_refs=True)
+        assert not any("MIGRATE src.md" in a for a in actions)
+        assert not any("AUGMENT src.md" in a for a in actions)
+        # Subsequent run is also a no-op
+        actions2 = adopt_tree(tmp_path, migrate_refs=True)
+        assert not any("src.md" in a for a in actions2)
+
+
+class TestScanPathRefsMasking:
+    """scan_path_refs mirrors the mask policy applied during migration:
+    masked path-refs are not reported."""
+
+    def test_fenced_path_ref_not_reported(self, tmp_path):
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("```\n[t](target.md)\n```\n")
+        assert scan_path_refs(tmp_path) == []
+
+    def test_inline_code_path_ref_not_reported(self, tmp_path):
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("Example: `[t](target.md)` end.")
+        assert scan_path_refs(tmp_path) == []
+
+    def test_one_masked_one_real_reports_only_the_real(self, tmp_path):
+        (tmp_path / "target.md").write_text("# t")
+        (tmp_path / "src.md").write_text("`[t](target.md)` example. Real: [t](target.md)")
+        reports = scan_path_refs(tmp_path)
+        assert len(reports) == 1
+        assert reports[0].resolved
+        assert reports[0].target == "target.md"
+
+
+class TestMoltMasking:
+    """Masked refs (fenced code, inline code, escaped brackets) are
+    documentation about croc syntax. Molt must preserve them byte-for-
+    byte so the adopt→molt round-trip doesn't mangle syntax examples."""
+
+    def test_fenced_block_ref_survives_molt(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="```markdown\n[[id:target]]\n```\n\nReal: [[id:target]]\n",
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        # Fenced example survives literally.
+        assert "```markdown\n[[id:target]]\n```" in content
+        # Real ref got rewritten.
+        assert "[Target](target.md)" in content
+
+    def test_inline_code_ref_survives_molt(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="Syntax: `[[id:target]]`. Real: [[id:target]]\n",
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "`[[id:target]]`" in content
+        assert "[Target](target.md)" in content
+
+    def test_escaped_ref_survives_molt(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="Literal: \\[[id:target]]. Real: [[id:target]]\n",
+        )
+        molt_tree(tmp_path)
+        content = (tmp_path / "src.md").read_text()
+        assert "\\[[id:target]]" in content
+        assert "[Target](target.md)" in content
+
+    def test_molt_refs_rewritten_count_excludes_masked(self, tmp_path, write_doc):
+        """Action log's `rewrote N refs` counts only real refs, not
+        masked examples — so the count reflects what actually changed."""
+        write_doc(tmp_path, "target.md", "target", title="Target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="Syntax: `[[id:target]]`. Real: [[id:target]]\n",
+        )
+        actions = molt_tree(tmp_path)
+        src_action = next(a for a in actions if "MOLT src.md" in a)
+        assert "rewrote 1 ref" in src_action
+
+
+class TestRenameMasking:
+    """Rename rewrites refs to the old id — but leaves masked
+    occurrences (documentation-about-syntax) untouched."""
+
+    def test_fenced_block_ref_survives_rename(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="```markdown\n[[id:target]]\n```\n\nReal: [[id:target]]\n",
+        )
+        rename_id(tmp_path, "target", "renamed")
+        content = (tmp_path / "src.md").read_text()
+        # Fenced-block example still shows the old id — it's documentation.
+        assert "```markdown\n[[id:target]]\n```" in content
+        # Real ref was rewritten.
+        assert "[[id:renamed]]" in content
+
+    def test_inline_code_ref_survives_rename(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "strong"}],
+            body="Syntax: `[[id:target]]`. Real: [[id:target]]\n",
+        )
+        rename_id(tmp_path, "target", "renamed")
+        content = (tmp_path / "src.md").read_text()
+        assert "`[[id:target]]`" in content
+        assert "Real: [[id:renamed]]" in content
+
+    def test_weak_ref_in_fenced_block_survives_rename(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[{"to": "target", "strength": "weak"}],
+            body="```\n[[see:target]]\n```\n\nSee [[see:target]]",
+        )
+        rename_id(tmp_path, "target", "renamed")
+        content = (tmp_path / "src.md").read_text()
+        assert "```\n[[see:target]]\n```" in content
+        assert "See [[see:renamed]]" in content
+
+
+class TestAdoptMaskingIdentity:
+    """Masked refs (documentation of croc syntax) must NOT contribute
+    to the auto-filled frontmatter `links:` during adopt."""
+
+    def test_inline_code_ref_does_not_materialize_link(self, tmp_path):
+        """The user-reported case: `[[id:X]]` in prose gets picked up
+        as a strong link to X, then check flags it as dangling."""
+        (tmp_path / "tutorial.md").write_text("# Using croc\n\nReferences look like `[[id:X]]`.\n")
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(tmp_path / "tutorial.md", (tmp_path / "tutorial.md").read_text())
+        assert fm.get("links", []) == []
+        assert check(load_tree(tmp_path)) == []
+
+    def test_fenced_block_ref_does_not_materialize_link(self, tmp_path):
+        (tmp_path / "tutorial.md").write_text("# Using croc\n\nExample:\n\n```markdown\n[[id:X]]\n```\n")
+        adopt_tree(tmp_path)
+        fm, _ = parse_frontmatter(tmp_path / "tutorial.md", (tmp_path / "tutorial.md").read_text())
+        assert fm.get("links", []) == []
+        assert check(load_tree(tmp_path)) == []
+
+
 class TestMoltHelpers:
     """Isolated helpers for precise assertions."""
 

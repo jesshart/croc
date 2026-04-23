@@ -40,8 +40,10 @@ from croc.check import (
     TreeError,
     build_index,
     check,
+    in_any_span,
     load_tree,
     parse_frontmatter,
+    scannable_spans,
 )
 
 # Markdown path-ref pattern: matches `[text](relative/path.md[#anchor])`.
@@ -508,8 +510,12 @@ def _migrate_refs_in_plan(
         # frontmatter `links` (Rule 5 — identity). This is correct for
         # both refs we migrated AND any pre-existing `[[id:X]]` refs in
         # the body, so scaffolds with hand-written croc refs also work.
+        # Masked regions (fenced code, inline code, escapes) are
+        # documentation — not live refs — so they don't count toward
+        # the identity fill.
         fm = yaml.safe_load(fm_text) or {}
-        body_strong_ids = {m.group(1) for m in STRONG_REF.finditer(new_body)}
+        body_spans = scannable_spans(new_body)
+        body_strong_ids = {m.group(1) for m in STRONG_REF.finditer(new_body) if not in_any_span(m.start(), body_spans)}
         declared = {link["to"] for link in fm.get("links", []) if isinstance(link, dict) and "to" in link}
         missing = body_strong_ids - declared
 
@@ -545,8 +551,14 @@ def _migrate_refs_in_body(
     unresolved: list[str] = []
     migrated: list[str] = []
     source_rel = source_abs_path.relative_to(root)
+    # Masked path-refs (fenced code, inline code, escaped parens) are
+    # documentation — not live refs — so they don't migrate and don't
+    # produce SKIP-REF notes for unresolved targets.
+    spans = scannable_spans(body)
 
     def replace(m: re.Match) -> str:
+        if in_any_span(m.start(), spans):
+            return m.group(0)
         text = m.group("text").strip()
         rel_path = m.group("path")
         anchor = m.group("anchor") or ""
@@ -648,7 +660,14 @@ def scan_path_refs(
             text = p.read_text()
         except OSError:
             continue
+        # Masked regions (fenced code, inline code, escaped parens) are
+        # documentation — not live path-refs — so they are omitted from
+        # the diagnostic. Keeps `refs` aligned with what `adopt --migrate-
+        # refs` would actually touch.
+        spans = scannable_spans(text)
         for m in MD_PATH_REF.finditer(text):
+            if in_any_span(m.start(), spans):
+                continue
             raw = m.group("path")
             target_rel: DocPath | None = None
             resolved = False
@@ -676,6 +695,18 @@ def scan_path_refs(
                 )
             )
     return reports
+
+
+def _has_unmasked_path_ref(body: str) -> bool:
+    """True iff `body` contains at least one `[text](path.md)` ref
+    outside a fenced code block, inline code span, or escape sequence.
+
+    Mirrors the mask policy applied during migration: a managed doc
+    whose only path-refs are documentation of the syntax has nothing
+    to migrate, so it should not enter the plan as a MIGRATE entry.
+    """
+    spans = scannable_spans(body)
+    return any(not in_any_span(m.start(), spans) for m in MD_PATH_REF.finditer(body))
 
 
 def _classify_for_adopt(
@@ -744,7 +775,10 @@ def _classify_for_adopt(
         # If the body still has markdown path-refs, we need to migrate them
         # on this run — otherwise re-running `init --adopt` on a previously
         # adopted tree can't reach the files that need dialect fixes.
-        if migrate_refs and MD_PATH_REF.search(body):
+        # Masked path-refs (documentation of syntax) don't count — a
+        # managed file whose only path-refs live inside fences, inline
+        # code, or escapes has nothing real to migrate.
+        if migrate_refs and _has_unmasked_path_ref(body):
             return _AdoptEntry(
                 path=p,
                 new_content=raw,
@@ -920,6 +954,24 @@ def _plan_rename(docs: Iterable[Doc], old_id: str, new_id: str) -> dict[DocPath,
     return plan
 
 
+def _rewrite_masked(body: str, pattern: str, replacement: str) -> str:
+    """`re.sub(pattern, replacement, body)` but leave masked matches alone.
+
+    Masked regions (fenced code, inline code, backslash-escaped brackets)
+    are documentation about the ref syntax; rewriting them would damage
+    the documentation. Every body-level rewrite in ops uses this helper
+    so the policy is uniform across rename, molt, and migrate.
+    """
+    spans = scannable_spans(body)
+
+    def _repl(m: re.Match) -> str:
+        if in_any_span(m.start(), spans):
+            return m.group(0)
+        return replacement
+
+    return re.sub(pattern, _repl, body)
+
+
 def _rewrite_doc(d: Doc, old: str, new: str) -> str | None:
     """Return new file content if this doc changes under the rename, else None."""
     fm_changed = False
@@ -936,9 +988,11 @@ def _rewrite_doc(d: Doc, old: str, new: str) -> str | None:
                 link["to"] = new
                 fm_changed = True
 
-    new_body = d.body
-    new_body = re.sub(rf"\[\[id:{re.escape(old)}\]\]", f"[[id:{new}]]", new_body)
-    new_body = re.sub(rf"\[\[see:{re.escape(old)}\]\]", f"[[see:{new}]]", new_body)
+    # Body rewrites skip masked regions — refs written as documentation
+    # of croc's syntax (inside fenced code, inline code, or with escaped
+    # brackets) must survive a rename unchanged.
+    new_body = _rewrite_masked(d.body, rf"\[\[id:{re.escape(old)}\]\]", f"[[id:{new}]]")
+    new_body = _rewrite_masked(new_body, rf"\[\[see:{re.escape(old)}\]\]", f"[[see:{new}]]")
     body_changed = new_body != d.body
 
     if not (fm_changed or body_changed):
@@ -1128,9 +1182,15 @@ def _molt_body(
     count = 0
     dangling_weak: list[str] = []
     source_dir = source_abs_path.parent
+    # Masked regions (fenced code, inline code, escaped brackets) are
+    # documentation about the ref syntax. Molt leaves them byte-for-
+    # byte so the round-trip adopt→molt doesn't mangle syntax examples.
+    spans = scannable_spans(body)
 
     def _replace(m: re.Match, *, strong: bool) -> str:
         nonlocal count
+        if in_any_span(m.start(), spans):
+            return m.group(0)
         target_id = DocId(m.group(1))
         if target_id not in index:
             if not strong:

@@ -6,6 +6,22 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.6.1 — 2026-04-23
+
+### Fixed
+
+- **Parser: documentation-about-syntax no longer parses as usage.**
+  `[[id:X]]` and `[text](path.md)` inside **fenced code blocks**
+  (``` or `~~~`), **inline code** (any matched backtick run), or
+  **backslash-escaped brackets/parens** (`\[`, `\]`, `\(`, `\)`) are
+  now treated as literal text by every ref-handling site — `check`,
+  `init --adopt` (including the auto-filled `links:` and the MIGRATE-
+  gate), `molt`, `rename-id`, and `refs`. Docs that teach croc's
+  syntax no longer materialize spurious `to: X` frontmatter entries,
+  trip `E-DANGLING` / `E-LIFETIME` / `E-IDENTITY`, or get their
+  syntax examples rewritten on molt. A ref written as documentation
+  survives the full adopt → molt round-trip byte-for-byte.
+
 ## 0.6.0 — 2026-04-23
 
 ### Added

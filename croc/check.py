@@ -50,6 +50,193 @@ STRONG_REF = re.compile(rf"\[\[id:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]
 WEAK_REF = re.compile(rf"\[\[see:({ID_CHARS})(?:#([^|\]]+))?(?:\|([^\]]+))?\]\]")
 
 
+# ---------------------------------------------------------------------------
+# Non-scannable regions (fenced code, inline code, escape sequences)
+# ---------------------------------------------------------------------------
+#
+# A doc that teaches croc's syntax needs to mention `[[id:X]]` and
+# `(path.md)` literally, without those sequences being scanned as live
+# references. The ref regexes above have no markdown-structural
+# awareness, so we pre-compute the character spans where refs should
+# NOT be anchored. Every call site (check, adopt-migrate, rename, molt,
+# scan_path_refs) gates its `finditer` / `sub` on `in_any_span` — a
+# masked match is returned as-is (rewrite sites) or skipped (read sites).
+#
+# Three sources of masking:
+#
+#   1. Fenced code blocks — triple-backtick ``` or triple-tilde ~~~
+#      opener; a matching-or-longer run of the same char (on its own
+#      line) closes. Unterminated fences extend to end-of-body
+#      (CommonMark behavior).
+#   2. Inline code — a backtick run of length N closes on the next
+#      backtick run of the same length. Unterminated runs fall through
+#      as literal text (also CommonMark).
+#   3. Escape sequences — `\[`, `\]`, `\(`, `\)` mask two chars each,
+#      so the ref regex can't anchor on an escaped bracket/paren.
+
+_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})", re.MULTILINE)
+_ESCAPE_RE = re.compile(r"\\[\[\]()]")
+
+
+def _fenced_spans(body: str) -> list[tuple[int, int]]:
+    """Spans covering every character inside a fenced code block.
+
+    Span starts at the opening fence line's first column and ends at
+    the end of the closing fence line (inclusive of its trailing
+    newline, if any). Unterminated fences extend to end-of-body.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    n = len(body)
+    while pos < n:
+        m = _FENCE_RE.search(body, pos)
+        if not m:
+            break
+        fence = m.group(1)
+        opener_char = fence[0]
+        opener_len = len(fence)
+        fence_start = m.start()
+        # Advance past the opener line.
+        opener_nl = body.find("\n", m.end())
+        if opener_nl == -1:
+            # Opener on last line, no body or closer possible. Unterminated.
+            spans.append((fence_start, n))
+            break
+        scan_pos = opener_nl + 1
+        close_end: int | None = None
+        while scan_pos < n:
+            nl = body.find("\n", scan_pos)
+            line_end = nl if nl != -1 else n
+            line = body[scan_pos:line_end]
+            stripped = line.lstrip(" \t")
+            if stripped and stripped[0] == opener_char:
+                run = 0
+                while run < len(stripped) and stripped[run] == opener_char:
+                    run += 1
+                rest = stripped[run:]
+                if run >= opener_len and rest.strip() == "":
+                    close_end = line_end + (1 if nl != -1 else 0)
+                    break
+            scan_pos = line_end + 1
+        if close_end is None:
+            spans.append((fence_start, n))
+            break
+        spans.append((fence_start, close_end))
+        pos = close_end
+    return spans
+
+
+def _inline_code_spans(body: str, fenced: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Spans covering matching backtick-run pairs OUTSIDE fenced spans.
+
+    A run of N backticks closes on the next run of exactly N backticks;
+    longer or shorter runs in between count as literal content (standard
+    CommonMark rule). Unterminated opens fall through: the backticks
+    are treated as literal text, no span emitted.
+    """
+    spans: list[tuple[int, int]] = []
+    regions: list[tuple[int, int]] = []
+    cursor = 0
+    for fs, fe in fenced:
+        if cursor < fs:
+            regions.append((cursor, fs))
+        cursor = fe
+    if cursor < len(body):
+        regions.append((cursor, len(body)))
+
+    for rstart, rend in regions:
+        i = rstart
+        while i < rend:
+            if body[i] != "`":
+                i += 1
+                continue
+            open_start = i
+            run_len = 0
+            while i + run_len < rend and body[i + run_len] == "`":
+                run_len += 1
+            open_end = i + run_len
+            j = open_end
+            close_end: int | None = None
+            while j < rend:
+                if body[j] != "`":
+                    j += 1
+                    continue
+                k = j
+                while k < rend and body[k] == "`":
+                    k += 1
+                if k - j == run_len:
+                    close_end = k
+                    break
+                j = k
+            if close_end is not None:
+                spans.append((open_start, close_end))
+                i = close_end
+            else:
+                # Unterminated: move past the opener run and keep scanning.
+                i = open_end
+    return spans
+
+
+def _escape_spans(body: str) -> list[tuple[int, int]]:
+    """Two-char spans covering `\\[`, `\\]`, `\\(`, and `\\)`.
+
+    Masking the backslash+bracket pair is enough to prevent the ref
+    regex from anchoring on the escaped bracket — and therefore to
+    prevent matches like `[[id:X\\]]` from resolving as references.
+    """
+    return [(m.start(), m.end()) for m in _ESCAPE_RE.finditer(body)]
+
+
+def _merge_sorted(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort by start, then fuse overlapping/touching spans.
+
+    `in_any_span` relies on the output being non-overlapping for a
+    clean linear scan, and callers that inspect spans directly get
+    an unambiguous representation.
+    """
+    if not spans:
+        return []
+    spans = sorted(spans)
+    merged: list[tuple[int, int]] = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def scannable_spans(body: str) -> list[tuple[int, int]]:
+    """Return the non-scannable character spans in `body`.
+
+    The ref parser treats these regions as literal text: matches whose
+    `start()` position falls inside any span are skipped (read sites)
+    or left untouched (rewrite sites).
+
+    Name is read from the caller's perspective: "these are the regions
+    I must not scan." Output is sorted by start and non-overlapping.
+    """
+    fenced = _fenced_spans(body)
+    inline = _inline_code_spans(body, fenced)
+    escaped = _escape_spans(body)
+    return _merge_sorted(fenced + inline + escaped)
+
+
+def in_any_span(pos: int, spans: list[tuple[int, int]]) -> bool:
+    """True iff `pos` lies within any `(start, end)` span (half-open).
+
+    Linear scan — spans are small (typically 0-5 per doc) and sorted,
+    so tree structures cost more overhead than they save.
+    """
+    for start, end in spans:
+        if start <= pos < end:
+            return True
+        if pos < start:
+            return False
+    return False
+
+
 @dataclass
 class Doc:
     path: DocPath
@@ -216,8 +403,16 @@ def check(docs: list[Doc]) -> list[str]:
         links, link_errors = _normalized_links(d)
         errors.extend(link_errors)
 
+        # Compute masked regions once per doc; rules 3 and 5 both consult
+        # it to skip refs that live inside fenced code, inline code, or
+        # backslash-escaped brackets — those are documentation about
+        # croc's syntax, not usage of it.
+        spans = scannable_spans(d.body)
+
         # Rule 3: no dangling strong refs in body.
         for m in STRONG_REF.finditer(d.body):
+            if in_any_span(m.start(), spans):
+                continue
             target = DocId(m.group(1))
             if target not in index:
                 errors.append(f"E-DANGLING {d.path}: strong link [[id:{target}]] points to a nonexistent doc")
@@ -233,7 +428,7 @@ def check(docs: list[Doc]) -> list[str]:
 
         # Rule 5: identity — declared strong links match body's strong refs.
         declared_strong = {DocId(link["to"]) for link in links if link.get("strength", "strong") == "strong"}
-        body_strong = {DocId(m.group(1)) for m in STRONG_REF.finditer(d.body)}
+        body_strong = {DocId(m.group(1)) for m in STRONG_REF.finditer(d.body) if not in_any_span(m.start(), spans)}
         if declared_strong != body_strong:
             missing = body_strong - declared_strong
             extra = declared_strong - body_strong

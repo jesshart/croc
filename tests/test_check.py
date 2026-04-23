@@ -5,12 +5,16 @@ from __future__ import annotations
 import pytest
 
 from croc.check import (
+    STRONG_REF,
     TreeError,
     check,
+    in_any_span,
     load_tree,
     parse_frontmatter,
     scan_symlinks,
+    scannable_spans,
 )
+from croc.ops import MD_PATH_REF
 
 
 class TestLoadTree:
@@ -258,3 +262,266 @@ class TestSymlinks:
         git_files = {link.resolve()}
         warnings = scan_symlinks(main, git_files=git_files)
         assert any("not traversed" in w for w in warnings)
+
+
+class TestScannableSpans:
+    """Non-scannable region computation. The primitive behind every
+    ref-parser call site — tested in isolation before integration."""
+
+    def test_no_special_regions(self):
+        assert scannable_spans("plain text with [[id:foo]] ref") == []
+
+    def test_empty_body(self):
+        assert scannable_spans("") == []
+
+    def test_fenced_block_masks_body_ref(self):
+        body = "before\n```\n[[id:X]]\n```\nafter"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_fence_with_language_tag(self):
+        body = "```python\n[[id:X]]\n```"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_tilde_fence(self):
+        body = "~~~\n[[id:X]]\n~~~"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_backtick_and_tilde_fences_do_not_cross_close(self):
+        """A ~~~ line cannot close a ``` fence, and vice-versa — the
+        closing char must match the opener."""
+        body = "```\n[[id:X]]\n~~~\n[[id:Y]]\n```"
+        spans = scannable_spans(body)
+        # Whole body between first ``` and closing ``` is masked,
+        # including the ~~~ line in the middle.
+        matches = list(STRONG_REF.finditer(body))
+        assert len(matches) == 2
+        for m in matches:
+            assert in_any_span(m.start(), spans)
+
+    def test_longer_inner_fence_closes_shorter_opener(self):
+        """Per CommonMark: the closing fence must be >= opener length.
+        A 4-backtick line closes a 3-backtick opener, so a ref on the
+        following line is OUTSIDE the fenced span (unmasked)."""
+        body = "```\n````\nafter: [[id:X]]"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert not in_any_span(match.start(), scannable_spans(body))
+
+    def test_shorter_inner_fence_does_not_close(self):
+        """A 2-backtick line inside a 4-backtick opener is content."""
+        body = "````\n``\n[[id:X]]\n````"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_longer_opener_closed_by_same_length_run(self):
+        """A 4-backtick opener is closed by a 4-backtick run (not 3)."""
+        body = "````\n[[id:X]]\n````\nreal: [[id:foo]]"
+        matches = list(STRONG_REF.finditer(body))
+        assert len(matches) == 2
+        spans = scannable_spans(body)
+        assert in_any_span(matches[0].start(), spans)
+        assert not in_any_span(matches[1].start(), spans)
+
+    def test_unterminated_fence_extends_to_end(self):
+        body = "```\n[[id:X]]\nno closing fence"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_inline_code_masks_body_ref(self):
+        body = "prose `[[id:X]]` more prose"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_double_backtick_inline_code(self):
+        body = "prose ``[[id:X]]`` more"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_inline_code_with_embedded_backticks(self):
+        """A 1-run opener is closed by the NEXT 1-run, not by an
+        intermediate 2-run. Rare in croc docs but correct per spec."""
+        body = "see `` `[[id:X]]` `` literal"
+        # The `` `` `` opener encloses `` `[[id:X]]` `` and is closed
+        # by the next `` `` `` — the whole thing is inline code.
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_unterminated_inline_code_falls_through(self):
+        """An unmatched single backtick doesn't mask anything — the
+        ref that follows is treated as a real ref."""
+        body = "unterminated ` backtick [[id:X]]"
+        match = STRONG_REF.search(body)
+        assert match is not None
+        assert not in_any_span(match.start(), scannable_spans(body))
+
+    def test_escape_brackets_mask(self):
+        r"""`\[[id:X]]` has a backslash-escaped leading `[`; the ref
+        regex either won't anchor, or its anchor lands in a masked
+        span — either way, no match should slip through."""
+        body = r"prose \[[id:X]] more"
+        match = STRONG_REF.search(body)
+        if match is not None:
+            assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_escape_parens_mask_path_ref(self):
+        body = r"See \(outputs.md\) for examples."
+        match = MD_PATH_REF.search(body)
+        if match is not None:
+            assert in_any_span(match.start(), scannable_spans(body))
+
+    def test_real_ref_outside_fence_is_unmasked(self):
+        body = "```\n[[id:X]]\n```\n\nReal: [[id:foo]]"
+        matches = list(STRONG_REF.finditer(body))
+        assert len(matches) == 2
+        spans = scannable_spans(body)
+        assert in_any_span(matches[0].start(), spans)
+        assert not in_any_span(matches[1].start(), spans)
+
+    def test_one_masked_one_real_in_prose(self):
+        """The reported case: inline-code example + real ref."""
+        body = "Example: `[[id:X]]`. Real: [[id:foo]]"
+        matches = list(STRONG_REF.finditer(body))
+        assert len(matches) == 2
+        spans = scannable_spans(body)
+        assert in_any_span(matches[0].start(), spans)
+        assert not in_any_span(matches[1].start(), spans)
+
+    def test_backticks_inside_fence_do_not_open_inline(self):
+        """A lone backtick inside a fenced block must not start a
+        nested inline span; we'd double-count positions or worse."""
+        body = "```\nsome ` single tick inside\n```"
+        # No refs to test, but spans should be well-formed: the fence
+        # span covers everything, no stray inline span overlaps.
+        spans = scannable_spans(body)
+        assert len(spans) == 1
+        start, end = spans[0]
+        assert start == 0
+        # Span must cover the backtick inside the fence (position ~9).
+        assert start <= body.index(" ` ") < end
+
+    def test_spans_are_sorted_and_nonoverlapping(self):
+        body = "a `b` c ```\nd\n``` e \\[ f"
+        spans = scannable_spans(body)
+        for prev, nxt in zip(spans, spans[1:], strict=False):
+            assert prev[1] <= nxt[0]
+
+    def test_adjacent_spans_merge(self):
+        """Fence immediately followed by an escape: spans should not
+        overlap, and `in_any_span` works across the boundary."""
+        body = "```\n[[id:X]]\n```\\["
+        spans = scannable_spans(body)
+        # No position is reported twice.
+        for prev, nxt in zip(spans, spans[1:], strict=False):
+            assert prev[1] <= nxt[0]
+
+    def test_in_any_span_basic(self):
+        spans = [(0, 5), (10, 15)]
+        assert in_any_span(0, spans)
+        assert in_any_span(4, spans)
+        assert not in_any_span(5, spans)  # half-open
+        assert not in_any_span(9, spans)
+        assert in_any_span(10, spans)
+        assert in_any_span(14, spans)
+        assert not in_any_span(15, spans)
+        assert not in_any_span(100, spans)
+
+    def test_in_any_span_empty(self):
+        assert not in_any_span(0, [])
+        assert not in_any_span(42, [])
+
+
+class TestMaskingIntegration:
+    """`check()` honors scannable_spans for rules 3 (dangling) and 5
+    (identity). A doc that teaches croc syntax must not fail the
+    borrow checker on its own examples."""
+
+    def test_inline_code_ref_does_not_dangle(self, tmp_path, write_doc):
+        write_doc(
+            tmp_path,
+            "tutorial.md",
+            "tutorial",
+            body="References look like `[[id:X]]`.",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_fenced_block_ref_does_not_dangle(self, tmp_path, write_doc):
+        write_doc(
+            tmp_path,
+            "tutorial.md",
+            "tutorial",
+            body="Example:\n\n```\n[[id:X]]\n```\n",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_escaped_ref_does_not_dangle(self, tmp_path, write_doc):
+        write_doc(
+            tmp_path,
+            "tutorial.md",
+            "tutorial",
+            body=r"An escaped ref: \[[id:X]].",
+        )
+        assert check(load_tree(tmp_path)) == []
+
+    def test_one_masked_one_real_flags_only_the_real(self, tmp_path, write_doc):
+        """Mixed body: both occurrences target a nonexistent id, but
+        only the unmasked one produces an E-DANGLING."""
+        write_doc(
+            tmp_path,
+            "tutorial.md",
+            "tutorial",
+            body="Example: `[[id:ghost]]`. Real: [[id:ghost]]",
+        )
+        errors = check(load_tree(tmp_path))
+        dangling = [e for e in errors if "E-DANGLING" in e]
+        assert len(dangling) == 1
+
+    def test_masked_ref_does_not_trigger_identity(self, tmp_path, write_doc):
+        """A masked `[[id:target]]` in the body isn't a real ref, so
+        it does NOT need to be declared in frontmatter `links:`."""
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[],
+            body="Example syntax: `[[id:target]]`.",
+        )
+        errors = check(load_tree(tmp_path))
+        assert not any("E-IDENTITY" in e for e in errors)
+
+    def test_masked_ref_inside_fenced_block_does_not_trigger_identity(self, tmp_path, write_doc):
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[],
+            body="```markdown\n[[id:target]]\n```\n",
+        )
+        errors = check(load_tree(tmp_path))
+        assert not any("E-IDENTITY" in e for e in errors)
+
+    def test_real_ref_alongside_masked_still_requires_identity(self, tmp_path, write_doc):
+        """If a real ref exists alongside a masked one, the real ref
+        still needs a frontmatter link declaration."""
+        write_doc(tmp_path, "target.md", "target")
+        write_doc(
+            tmp_path,
+            "src.md",
+            "src",
+            links=[],
+            body="Example: `[[id:target]]`. Real: [[id:target]]",
+        )
+        errors = check(load_tree(tmp_path))
+        assert any("E-IDENTITY" in e and "target" in e for e in errors)

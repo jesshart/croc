@@ -364,6 +364,38 @@ Use strong for load-bearing citations (a runbook referencing the ADR it implemen
 
 Weak links are exempt from rules 3 and 4 by design.
 
+### Documenting the syntax
+
+A doc that teaches croc — a tutorial, an ADR about the convention, an
+implementation plan quoting the ref syntax — needs to mention `[[id:X]]`
+and `[text](path.md)` literally without those sequences being parsed as
+live references. Three escape hatches, all recognized by every croc
+command:
+
+- **Fenced code blocks** (` ``` ` or `~~~`). Everything between opener
+  and matching closer is literal.
+- **Inline code** (any matching backtick run: `` `…` ``, ` `` …`` `, …).
+  Use when you're quoting a ref mid-sentence.
+- **Backslash escapes** on a single bracket or paren: `\[`, `\]`, `\(`,
+  `\)`. Use for a one-off literal in prose where you don't want the
+  code styling.
+
+```markdown
+References look like `[[id:registry]]` — the ref in backticks is
+documentation, not a live ref. A real ref reads: [[id:registry]].
+
+Path-style refs get migrated on adopt:
+
+\`\`\`markdown
+[label](target.md)
+\`\`\`
+```
+
+Refs in masked regions don't count toward `E-DANGLING` / `E-IDENTITY`,
+don't get auto-filled into frontmatter `links:` on `init --adopt`,
+aren't rewritten by `rename-id` or `molt`, and aren't reported by
+`refs`. They survive the full adopt → molt round-trip byte-for-byte.
+
 ### Where croc fits (and doesn't)
 
 **Good fits**
@@ -503,8 +535,8 @@ The flow:
 3. Promote the `## Unreleased` section in [`CHANGELOG.md`](CHANGELOG.md) to `## X.Y.Z — YYYY-MM-DD`. Add a fresh empty `## Unreleased` above it.
 4. Commit as `chore(release): vX.Y.Z`. Duplicate the CHANGELOG section into the commit body so the commit stands alone.
 5. Push: `git push origin main`.
-6. Tag: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
-7. Create the GitHub Release from the tag: `gh release create vX.Y.Z --notes-from-tag` (or use the web UI). Publication triggers the publish workflow.
+6. Tag with the release notes in the annotation (not just `-m vX.Y.Z` — that leaves the GitHub Release body effectively empty): write the new CHANGELOG entry's body to a temp file and run `git tag -a vX.Y.Z -F notes.md && git push origin vX.Y.Z`. The tag annotation becomes the release body in the next step.
+7. Create the GitHub Release from the tag: `gh release create vX.Y.Z --notes-from-tag --title vX.Y.Z` (or use the web UI). Publication triggers the publish workflow.
 
 The `make pypi` target is a **manual fallback only**, not the canonical path. It runs `uv build && uv publish` locally and requires a PyPI token in the environment; it bypasses CI's clean build and the version/tag/changelog discipline above. Avoid it unless Trusted Publishing is down.
 
