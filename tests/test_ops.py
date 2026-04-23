@@ -11,6 +11,8 @@ import yaml
 from croc.check import check, load_tree, parse_frontmatter
 from croc.ops import (
     OpError,
+    _has_marker,
+    _molt_croc_toml,
     _molt_frontmatter,
     _propose_id,
     _slugify,
@@ -181,10 +183,30 @@ class TestInit:
         assert (tmp_path / ".croc.toml").read_text().startswith("# croc")
 
     def test_idempotent_when_marker_exists(self, tmp_path):
-        (tmp_path / ".croc.toml").write_text("# preexisting\n")
+        original = '# preexisting\nversion = "0.1"\n'
+        (tmp_path / ".croc.toml").write_text(original)
         assert init_tree(tmp_path) == []
         # Did not overwrite
-        assert (tmp_path / ".croc.toml").read_text() == "# preexisting\n"
+        assert (tmp_path / ".croc.toml").read_text() == original
+
+    def test_readds_marker_when_foreign_config_present(self, tmp_path):
+        # Post-molt state: foreign config retained, version marker gone.
+        original = '[[trace]]\nname = "x"\npattern = \'foo\'\ncode_globs = ["*.py"]\n'
+        (tmp_path / ".croc.toml").write_text(original)
+        actions = init_tree(tmp_path)
+        assert actions == ["UPDATE .croc.toml (add version marker)"]
+        final = (tmp_path / ".croc.toml").read_text()
+        assert 'version = "0.1"' in final
+        # Foreign content preserved verbatim.
+        assert "[[trace]]" in final
+        assert 'name = "x"' in final
+
+    def test_readds_marker_dry_run_writes_nothing(self, tmp_path):
+        original = '[[trace]]\nname = "x"\npattern = \'foo\'\ncode_globs = ["*.py"]\n'
+        (tmp_path / ".croc.toml").write_text(original)
+        actions = init_tree(tmp_path, dry_run=True)
+        assert actions == ["UPDATE .croc.toml (add version marker)"]
+        assert (tmp_path / ".croc.toml").read_text() == original
 
     def test_dry_run_writes_nothing(self, tmp_path):
         actions = init_tree(tmp_path, dry_run=True)
@@ -1468,3 +1490,106 @@ class TestGitFilesFilter:
             dry_run=True,
             git_files=allowed,
         )
+
+
+# ---------------------------------------------------------------------------
+# Molt `.croc.toml` symmetry — strip only the `version` marker; preserve
+# foreign config. Adds the mirror-image to `_molt_frontmatter`'s
+# croc/foreign split.
+# ---------------------------------------------------------------------------
+
+
+class TestMoltCrocToml:
+    def test_strip_marker_only_returns_none(self):
+        assert _molt_croc_toml('version = "0.1"\n') is None
+
+    def test_strip_marker_with_preceding_comment_returns_none(self):
+        # The default `.croc.toml` ships a comment directly above the
+        # marker; dropping the marker should drop the comment too.
+        assert _molt_croc_toml('# croc tree root marker.\nversion = "0.1"\n') is None
+
+    def test_strip_preserves_trace_block(self):
+        original = (
+            'version = "0.1"\n\n[[trace]]\nname = "persist_parquet"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
+        )
+        result = _molt_croc_toml(original)
+        assert result is not None
+        assert 'version = "0.1"' not in result
+        assert "[[trace]]" in result
+        assert 'name = "persist_parquet"' in result
+
+    def test_strip_idempotent_on_already_molted(self):
+        # Post-molt content (no version line) fed back through the
+        # stripper is unchanged except for normalization to a trailing
+        # newline.
+        original = '[[trace]]\nname = "x"\n'
+        result = _molt_croc_toml(original)
+        assert result == '[[trace]]\nname = "x"\n'
+
+    def test_does_not_strip_table_scoped_version(self):
+        # `version` inside a table (indented by belonging to `[package]`)
+        # is a foreign key that happens to share the name.
+        original = '[package]\nversion = "1.0"\n'
+        result = _molt_croc_toml(original)
+        # Unchanged.
+        assert result == original
+
+    def test_has_marker_positive(self):
+        assert _has_marker('version = "0.1"\n')
+        assert _has_marker('# comment\nversion = "0.1"\n')
+        # Marker before a later table is still the marker.
+        assert _has_marker('version = "0.1"\n\n[[trace]]\nname = "x"\n')
+
+    def test_has_marker_negative(self):
+        assert not _has_marker("")
+        assert not _has_marker('[[trace]]\nname = "x"\n')
+        # `version` under a foreign table belongs to that table.
+        assert not _has_marker('[package]\nversion = "1.0"\n')
+        # Table scope is sticky — a `version` key after any table
+        # header belongs to a table, not the root.
+        assert not _has_marker('[[trace]]\nname = "x"\nversion = "0.1"\n')
+
+    def test_molt_tree_removes_marker_only_file(self, tmp_path, write_doc):
+        # A tree with just the default marker file → same pre-feature
+        # behavior: `.croc.toml` deleted after molt.
+        (tmp_path / ".croc.toml").write_text('version = "0.1"\n')
+        write_doc(tmp_path, "a.md", "a")
+        actions = molt_tree(tmp_path)
+        assert not (tmp_path / ".croc.toml").exists()
+        assert any(a.startswith("REMOVE .croc.toml") for a in actions)
+
+    def test_molt_tree_rewrites_config_file(self, tmp_path, write_doc):
+        original = 'version = "0.1"\n\n[[trace]]\nname = "p"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
+        (tmp_path / ".croc.toml").write_text(original)
+        write_doc(tmp_path, "a.md", "a")
+        actions = molt_tree(tmp_path)
+        assert (tmp_path / ".croc.toml").exists()
+        final = (tmp_path / ".croc.toml").read_text()
+        assert 'version = "0.1"' not in final
+        assert "[[trace]]" in final
+        assert any(a.startswith("REWRITE .croc.toml") for a in actions)
+
+    def test_molt_tree_dry_run_does_not_touch_config(self, tmp_path, write_doc):
+        original = 'version = "0.1"\n\n[[trace]]\nname = "p"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
+        path = tmp_path / ".croc.toml"
+        path.write_text(original)
+        write_doc(tmp_path, "a.md", "a")
+        molt_tree(tmp_path, dry_run=True)
+        assert path.read_text() == original
+
+    def test_roundtrip_init_adopt_molt_init(self, tmp_path, write_doc):
+        # Start: adopted tree with foreign config.
+        original_toml = 'version = "0.1"\n\n[[trace]]\nname = "p"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
+        (tmp_path / ".croc.toml").write_text(original_toml)
+        write_doc(tmp_path, "a.md", "a")
+        # Molt: version gone, trace preserved.
+        molt_tree(tmp_path)
+        molted = (tmp_path / ".croc.toml").read_text()
+        assert "[[trace]]" in molted
+        assert 'version = "0.1"' not in molted
+        # Re-init: marker restored ahead of foreign content.
+        actions = init_tree(tmp_path)
+        assert any(a.startswith("UPDATE .croc.toml") for a in actions)
+        rerestored = (tmp_path / ".croc.toml").read_text()
+        assert 'version = "0.1"' in rerestored
+        assert "[[trace]]" in rerestored

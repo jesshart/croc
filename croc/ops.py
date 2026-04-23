@@ -210,18 +210,52 @@ _DEFAULT_CROC_TOML = """\
 version = "0.1"
 """
 
+# Top-level TOML keys croc owns in `.croc.toml`. Stripped by `molt`,
+# re-added by `init --adopt`. Everything else (`[[trace]]`, `[hunt]`,
+# any user extension) is foreign content that survives the lifecycle.
+_CROC_TOML_MARKER_KEYS: tuple[str, ...] = ("version",)
+
+# Matches a top-level `<key> =` assignment (no leading whitespace →
+# not inside a table). Anchors to `^` since we feed it single lines.
+_TOP_LEVEL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
 
 def init_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
-    """Create `.croc.toml` at `root`. Returns action log.
+    """Create `.croc.toml` at `root`, or re-add the `version` marker.
 
-    Idempotent: returns empty list (no-op) if the marker already exists,
-    so `init --adopt` can run on a partially-initialized tree.
+    Three cases:
+
+    - File absent → CREATE with the default marker.
+    - File present and already carries a top-level `version = ...`
+      assignment → no-op.
+    - File present but lacks the marker (post-molt state with foreign
+      config retained) → prepend the marker block; foreign content is
+      preserved verbatim below.
+
+    This makes `init --adopt` idempotent across the full lifecycle,
+    including the round-trip through `molt`.
     """
     root = root.resolve()
     marker = root / ".croc.toml"
 
     if marker.exists():
-        return []
+        text = marker.read_text()
+        if _has_marker(text):
+            return []
+        # Foreign config present, but the `version` marker has been
+        # molted out. Re-add it ahead of the existing content so the
+        # marker is the first thing a reader sees.
+        action = f"UPDATE {marker.relative_to(root)} (add version marker)"
+        if dry_run:
+            return [action]
+        new_text = _DEFAULT_CROC_TOML
+        if not new_text.endswith("\n"):
+            new_text += "\n"
+        if text and not text.startswith("\n"):
+            new_text += "\n"
+        new_text += text
+        marker.write_text(new_text)
+        return [action]
 
     action = f"CREATE {marker.relative_to(root) if marker.is_relative_to(root) else marker}"
     if dry_run:
@@ -230,6 +264,71 @@ def init_tree(root: pathlib.Path, dry_run: bool = False) -> list[str]:
     root.mkdir(parents=True, exist_ok=True)
     marker.write_text(_DEFAULT_CROC_TOML)
     return [action]
+
+
+def _has_marker(text: str) -> bool:
+    """True iff `text` contains a root-scope `version = ...` assignment.
+
+    Only keys in TOML's root scope (before any `[table]` / `[[array]]`
+    header) count — `version` appearing inside a table like
+    `[package]\\nversion = "1.0"` is a foreign key that happens to
+    share the name and must not be treated as croc's.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            return False
+        m = _TOP_LEVEL_ASSIGN_RE.match(stripped)
+        if m and m.group(1) in _CROC_TOML_MARKER_KEYS:
+            return True
+    return False
+
+
+def _molt_croc_toml(text: str) -> str | None:
+    """Strip croc-owned top-level keys from `.croc.toml` content.
+
+    Returns the rewritten content, or `None` when the resulting file
+    would be empty (no foreign config remains). Callers then delete
+    the file, matching the pre-feature behavior for unadorned marker
+    files.
+
+    Surgical line-oriented approach: remove assignments `<key> = ...`
+    that live in the TOML root scope (before any `[table]` / `[[array]]`
+    header) when `<key>` is in `_CROC_TOML_MARKER_KEYS`. Any key below
+    a table header belongs to that table and is foreign — e.g.
+    `[package]\\nversion = "1.0"` stays put.
+
+    Leading comment lines immediately above a stripped assignment are
+    also dropped: the default `.croc.toml` ships `# croc tree root
+    marker.` right above `version = "0.1"` and the comment is croc's,
+    not the user's.
+    """
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    in_root_scope = True
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped_line = line.strip()
+        # Any table header ends the root scope for the rest of the file.
+        if stripped_line.startswith("[") and stripped_line.endswith("]"):
+            in_root_scope = False
+            out.append(line)
+            i += 1
+            continue
+        if in_root_scope and stripped_line:
+            m = _TOP_LEVEL_ASSIGN_RE.match(stripped_line)
+            if m and m.group(1) in _CROC_TOML_MARKER_KEYS:
+                while out and out[-1].lstrip().startswith("#"):
+                    out.pop()
+                i += 1
+                continue
+        out.append(line)
+        i += 1
+    rewritten = "".join(out).strip()
+    if not rewritten:
+        return None
+    return rewritten + "\n"
 
 
 @dataclass
@@ -923,7 +1022,10 @@ def molt_tree(
     Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into plain
     `[text](path.md[#anchor])` markdown, strips `id`/`kind`/`links` from
     frontmatter (preserving every other key), removes empty-after-strip
-    frontmatter blocks entirely, and deletes `.croc.toml`.
+    frontmatter blocks, and rewrites `.croc.toml` — stripping only the
+    `version` marker while preserving foreign config (`[[trace]]`,
+    `[hunt]`, anything else). Files whose `.croc.toml` was marker-only
+    end up deleted, matching the pre-feature behavior.
 
     The tree must pass `check` first — same pre-condition as `rename`.
     `dry_run=True` runs validation and planning but writes nothing.
@@ -952,30 +1054,48 @@ def molt_tree(
             plan[d.path] = new_content
             per_file_stats[d.path] = (refs_rewritten, stripped_fields)
 
+    # Plan the `.croc.toml` rewrite. Three outcomes:
+    # - file missing → nothing to do
+    # - stripped content empty → REMOVE (matches pre-feature behavior)
+    # - foreign config remains → REWRITE with only foreign content
     marker = root / ".croc.toml"
-    remove_marker = marker.exists()
+    marker_action: tuple[str, str | None] | None = None
+    if marker.exists():
+        original = marker.read_text()
+        stripped = _molt_croc_toml(original)
+        if stripped is None:
+            marker_action = ("REMOVE", None)
+        elif stripped != original:
+            marker_action = ("REWRITE", stripped)
+        # else: already stripped (post-molt idempotency); no-op.
 
     _simulate_molt(plan)  # raises OpError if any planned output is malformed
 
     actions: list[str] = list(skip_notes)
     for rel_path in sorted(plan):
-        rw, stripped = per_file_stats[rel_path]
+        rw, stripped_fields = per_file_stats[rel_path]
         parts: list[str] = []
         if rw:
             parts.append(f"rewrote {rw} ref{'s' if rw != 1 else ''}")
-        if stripped:
-            parts.append(f"stripped {', '.join(stripped)}")
+        if stripped_fields:
+            parts.append(f"stripped {', '.join(stripped_fields)}")
         actions.append(f"MOLT {rel_path} ({'; '.join(parts)})")
-    if remove_marker:
-        actions.append(f"REMOVE {marker.relative_to(root)}")
+    if marker_action is not None:
+        verb, _ = marker_action
+        actions.append(f"{verb} {marker.relative_to(root)}")
 
     if dry_run:
         return actions
 
     if plan:
         _commit(root, plan)
-    if remove_marker:
-        marker.unlink()
+    if marker_action is not None:
+        verb, new_content = marker_action
+        if verb == "REMOVE":
+            marker.unlink()
+        else:
+            assert new_content is not None
+            marker.write_text(new_content)
     return actions
 
 
