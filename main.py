@@ -7,8 +7,11 @@ import pathlib
 
 import typer
 
+from croc.attack import attack_tree
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
+from croc.config import ConfigError, load_config
 from croc.crawl import _plan_crawl_with_stats, apply_plan, resolve_file_filter
+from croc.hunt import hunt_tree
 from croc.lurk import lurk_tree
 from croc.ops import (
     OpError,
@@ -519,6 +522,102 @@ def lurk_cmd(
         typer.echo(f"\n{n} file{plural} exceed {max_lines} lines", err=True)
         raise typer.Exit(code=1)
     typer.echo(f"lurk OK (0 file{plural} exceed {max_lines} lines)")
+
+
+@app.command("attack")
+def attack_cmd(
+    ctx: typer.Context,
+    root: pathlib.Path = typer.Argument(
+        pathlib.Path("thoughts"),
+        help="Root of the documentation tree.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions; do not write."),
+    strict_traces: bool = typer.Option(
+        False,
+        "--strict-traces",
+        help=(
+            "Exit non-zero if any SKIP-TRACE notes were emitted (unresolved or "
+            "ambiguous captures). Use in CI so bad config / missing docs do not "
+            "silently slip through."
+        ),
+    ),
+) -> None:
+    """Scan code per `.croc.toml` `[[trace]]` patterns; write `tracks:` to docs."""
+    # Attack's file filter must cover the whole repo — code lives above
+    # the tree root — so we pass `include_untracked` through and let
+    # attack_tree derive the filter at the git repo root itself.
+    include_untracked = bool((ctx.obj or {}).get("include_untracked", False))
+    try:
+        config = load_config(root)
+        actions = attack_tree(root, config, dry_run=dry_run, include_untracked=include_untracked)
+    except (ConfigError, OpError) as e:
+        typer.echo(f"attack FAILED: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    n_skips = _render_actions(actions, dry_run=dry_run, verb_label="attack")
+    if strict_traces and n_skips:
+        raise typer.Exit(code=1)
+
+
+@app.command("hunt")
+def hunt_cmd(
+    ctx: typer.Context,
+    root: pathlib.Path = typer.Argument(
+        pathlib.Path("thoughts"),
+        help="Root of the documentation tree.",
+    ),
+    base: str = typer.Option(
+        None,
+        "--base",
+        help=(
+            "Git ref to diff against (`<base>...HEAD`). Default is staged "
+            "changes (`git diff --cached`). Use `--base main` for CI."
+        ),
+    ),
+    forgiving: bool = typer.Option(
+        None,
+        "--forgiving/--strict",
+        help=(
+            "Override `.croc.toml` `hunt.strict`. `--strict` (default in "
+            "config) alerts on any tracked source change. `--forgiving` "
+            "suppresses the alert when the bound doc is also in the diff."
+        ),
+    ),
+) -> None:
+    """Alert when docs' bound source files changed without the docs.
+
+    Intended as a pre-commit hook or CI gate. Exits 1 if any alerts fire.
+    """
+    git_files = _file_filter_for(ctx, root)
+    try:
+        config = load_config(root)
+    except ConfigError as e:
+        typer.echo(f"hunt FAILED: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    # CLI flag (if given) overrides config default. Typer parses the
+    # three-state flag as bool | None — None means "use the config".
+    strict = config.hunt.strict if forgiving is None else (not forgiving)
+
+    try:
+        alerts = hunt_tree(root, base=base, strict=strict, git_files=git_files)
+    except OpError as e:
+        typer.echo(f"hunt FAILED: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    for a in alerts:
+        typer.secho(
+            f"{a.doc_rel} tracks changed file {a.source_rel}",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+    n = len(alerts)
+    plural = "" if n == 1 else "s"
+    if n:
+        mode = "strict" if strict else "forgiving"
+        typer.echo(f"\n{n} alert{plural} ({mode} mode)", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"hunt OK (0 alert{plural})")
 
 
 def main() -> None:
