@@ -8,7 +8,7 @@ import pathlib
 import typer
 
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
-from croc.crawl import apply_plan, plan_crawl, resolve_file_filter
+from croc.crawl import _plan_crawl_with_stats, apply_plan, resolve_file_filter
 from croc.lurk import lurk_tree
 from croc.ops import (
     OpError,
@@ -330,11 +330,21 @@ def crawl_cmd(
             fg=typer.colors.CYAN,
         )
 
-    planned = plan_crawl(src, output, file_types=file_types, git_files=git_files)
+    planned, n_disambiguated = _plan_crawl_with_stats(src, output, file_types=file_types, git_files=git_files)
 
     if not planned:
         typer.echo(f"crawl FAILED: no matching files found under {src}", err=True)
         raise typer.Exit(code=1)
+
+    if n_disambiguated:
+        # Silent disambiguation was the pre-fix data-loss bug's blast
+        # radius; surface it so the user notices their output names
+        # diverged from the default `<stem>.md` form.
+        typer.secho(
+            f"note: {n_disambiguated} filename collision(s) disambiguated (full filenames used)",
+            err=True,
+            fg=typer.colors.CYAN,
+        )
 
     # Split the plan into would-create vs would-keep. Existing files
     # are summarized on stderr (not fed through _render_actions as

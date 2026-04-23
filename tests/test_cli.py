@@ -197,6 +197,37 @@ def test_crawl_existing_files_noted_on_stderr(
     assert "crawl OK (0 actions)" in second.stdout
 
 
+def test_crawl_disambiguation_note_fires_on_stem_collision(runner: CliRunner, tmp_path: pathlib.Path) -> None:
+    """Same-stem siblings (Dockerfile + Dockerfile.ecs + ...) previously
+    collapsed to a single `.md` output silently. The fix disambiguates
+    and the CLI now surfaces how many files were affected."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "Dockerfile").write_text("")
+    (src / "Dockerfile.ecs").write_text("")
+    (src / "Dockerfile.fargate_worker").write_text("")
+
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["crawl", str(src), "-o", str(out)])
+    assert result.exit_code == 0
+    assert "3 filename collision(s) disambiguated" in result.stderr
+    # All three stubs exist on disk — no last-write-wins data loss.
+    assert (out / "Dockerfile.md").exists()
+    assert (out / "Dockerfile.ecs.md").exists()
+    assert (out / "Dockerfile.fargate_worker.md").exists()
+
+
+def test_crawl_no_disambiguation_note_when_stems_unique(
+    runner: CliRunner, tmp_path: pathlib.Path, src_with_py: pathlib.Path
+) -> None:
+    """The note must not fire on non-colliding trees — regression guard
+    against spuriously nagging every crawl run."""
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["crawl", str(src_with_py), "-o", str(out)])
+    assert result.exit_code == 0
+    assert "disambiguated" not in result.stderr
+
+
 # ---------------------------------------------------------------------------
 # --include-untracked / --no-include-untracked global flag
 #

@@ -114,6 +114,62 @@ def test_skip_dot_and_pycache_dirs(tmp_path: pathlib.Path) -> None:
     assert paths == {"self.md", "a.md"}
 
 
+def test_plan_crawl_disambiguates_stem_collisions(tmp_path: pathlib.Path) -> None:
+    """Siblings with the same `Path.stem` (e.g. `Dockerfile`,
+    `Dockerfile.ecs`, `Dockerfile.fargate_worker`) must each get a
+    distinct output stub — otherwise they silently overwrite each
+    other at apply_plan. Disambiguation falls back to the full
+    source filename."""
+    src = tmp_path / "src"
+    _make_tree(
+        src,
+        {
+            "Dockerfile": "",
+            "Dockerfile.ecs": "",
+            "Dockerfile.fargate_worker": "",
+        },
+    )
+    planned = plan_crawl(src, tmp_path / "out")
+    names = {p.name for p, _ in planned}
+    assert "Dockerfile.md" in names
+    assert "Dockerfile.ecs.md" in names
+    assert "Dockerfile.fargate_worker.md" in names
+
+
+def test_plan_crawl_mirrors_survive_disambiguation(tmp_path: pathlib.Path) -> None:
+    """Each disambiguated stub still carries a `mirrors:` breadcrumb
+    pointing at the exact source file (the field was already correct
+    pre-fix; guard against regressions)."""
+    src = tmp_path / "src"
+    _make_tree(src, {"Dockerfile": "", "Dockerfile.ecs": ""})
+    planned = plan_crawl(src, tmp_path / "out")
+    by_name = {p.name: body for p, body in planned}
+    assert "mirrors: src/Dockerfile\n" in by_name["Dockerfile.md"]
+    assert "mirrors: src/Dockerfile.ecs\n" in by_name["Dockerfile.ecs.md"]
+
+
+def test_plan_crawl_no_disambiguation_when_stems_unique(tmp_path: pathlib.Path) -> None:
+    """Non-colliding trees keep the clean `foo.py → foo.md` shape —
+    the fix must not regress the common case."""
+    src = tmp_path / "src"
+    _make_tree(src, {"a.py": "", "b.ts": "", "c.md": ""})
+    planned = plan_crawl(src, tmp_path / "out")
+    names = {p.name for p, _ in planned}
+    assert names == {"self.md", "a.md", "b.md", "c.md"}
+
+
+def test_plan_crawl_collisions_are_per_directory(tmp_path: pathlib.Path) -> None:
+    """Two `Dockerfile`s in different subdirectories plan to different
+    output dirs — never a real collision, so no disambiguation should
+    trigger."""
+    src = tmp_path / "src"
+    _make_tree(src, {"a/Dockerfile": "", "b/Dockerfile": ""})
+    planned = plan_crawl(src, tmp_path / "out")
+    rels = {p.relative_to(tmp_path / "out").as_posix() for p, _ in planned}
+    assert "a/Dockerfile.md" in rels
+    assert "b/Dockerfile.md" in rels
+
+
 def _init_repo(root: pathlib.Path) -> None:
     """Set up a minimal git repo inside `root`, with a stable identity
     so `git commit` works in CI where user.name/email may be unset."""

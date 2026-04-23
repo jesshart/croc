@@ -6,6 +6,28 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Fixed
+
+- **`croc crawl` silently collapsed same-stem siblings into one output.**
+  Files that differed only in suffix (`Dockerfile`, `Dockerfile.ecs`,
+  `Dockerfile.fargate_worker`; `Makefile` + `Makefile.local`;
+  `.env` + `.env.local`) all planned to the same `<stem>.md` path
+  because `pathlib.Path.stem` strips only the final suffix. `apply_plan`
+  then wrote them in order — last writer won, the others were lost.
+  `plan_crawl` now detects output-name collisions *within a single
+  output directory* and disambiguates by using the full source filename:
+  `Dockerfile.md` / `Dockerfile.ecs.md` / `Dockerfile.fargate_worker.md`.
+  Non-colliding trees are unchanged. The CLI prints a one-line cyan
+  note on stderr whenever disambiguation triggered, so the naming
+  decision isn't silent.
+
+  **Migration:** if you have an existing crawl-ed output tree that
+  *was* affected, a re-run will produce the new disambiguated names
+  alongside the old bare-stem file. The old file's content corresponds
+  to whichever sibling won the previous last-write race
+  (unrecoverable; check its `mirrors:` field to confirm). Pass
+  `--force` to overwrite, or delete the now-orphaned file manually.
+
 ## 0.5.0 — 2026-04-22
 
 ### Added

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 
@@ -57,10 +58,27 @@ def plan_crawl(
     Directories with no tracked content (when `git_files` is used) and
     dot-prefixed / `__`-prefixed directories are pruned entirely.
     """
+    planned, _ = _plan_crawl_with_stats(src, output_root, file_types=file_types, git_files=git_files)
+    return planned
+
+
+def _plan_crawl_with_stats(
+    src: pathlib.Path,
+    output_root: pathlib.Path,
+    file_types: list[str] | None = None,
+    git_files: set[pathlib.Path] | None = None,
+) -> tuple[list[tuple[pathlib.Path, str]], int]:
+    """Same as `plan_crawl`, plus a count of files whose output name
+    was disambiguated because a same-directory stem collision would
+    have otherwise silently overwritten them. The CLI uses the count
+    to surface the rename; library callers use `plan_crawl` and drop
+    it. Kept private so we aren't committing the stats shape as part
+    of the public surface."""
     if file_types is None:
         file_types = ["all"]
 
     planned: list[tuple[pathlib.Path, str]] = []
+    n_disambiguated = 0
     src_name = src.name
 
     for dir_path, dirnames, filenames in src.walk():
@@ -83,11 +101,28 @@ def plan_crawl(
         dir_name = src_name if str(rel) == "." else dir_path.name
         planned.append((out_dir / "self.md", _directory_self_md(dir_name, contents, mirrors_dir)))
 
+        # `Path.stem` strips only the final suffix, so siblings that
+        # differ only in extension (e.g. `Dockerfile`, `Dockerfile.ecs`,
+        # `Dockerfile.fargate_worker`; `Makefile` + `Makefile.local`)
+        # would all collapse to the same `<stem>.md` output path and
+        # silently overwrite each other at `apply_plan`. Detect those
+        # groups here and fall back to the full source filename for
+        # every member of a colliding group.
+        stem_groups: dict[str, list[str]] = defaultdict(list)
         for f in matched:
-            mirrors_file = f"{mirrors_dir}/{f}"
-            planned.append((out_dir / f"{pathlib.Path(f).stem}.md", _file_stub(f, mirrors_file)))
+            stem_groups[f"{pathlib.Path(f).stem}.md"].append(f)
 
-    return planned
+        for f in matched:
+            candidate = f"{pathlib.Path(f).stem}.md"
+            if len(stem_groups[candidate]) == 1:
+                out_name = candidate
+            else:
+                out_name = f"{f}.md"
+                n_disambiguated += 1
+            mirrors_file = f"{mirrors_dir}/{f}"
+            planned.append((out_dir / out_name, _file_stub(f, mirrors_file)))
+
+    return planned, n_disambiguated
 
 
 def build_crawl(
