@@ -6,6 +6,8 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.6.0 — 2026-04-23
+
 ### Added
 
 - **`croc attack [root] [--dry-run] [--strict-traces]`** — scan source
