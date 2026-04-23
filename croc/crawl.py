@@ -20,6 +20,7 @@ filtering is desired.
 
 from __future__ import annotations
 
+import os
 import pathlib
 import subprocess
 from collections import defaultdict
@@ -81,7 +82,13 @@ def _plan_crawl_with_stats(
     n_disambiguated = 0
     src_name = src.name
 
-    for dir_path, dirnames, filenames in src.walk():
+    # `os.walk` (not `Path.walk`) so we stay compatible with Python
+    # 3.11 — `Path.walk` only landed in 3.12. Semantics match: we
+    # mutate `dirnames[:]` to prune (both walkers honor that), and
+    # wrap the yielded directory string back into a `Path` so the
+    # loop body's `/` and `relative_to` calls work unchanged.
+    for dir_path_str, dirnames, filenames in os.walk(src):
+        dir_path = pathlib.Path(dir_path_str)
         dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d))
 
         if git_files is not None:

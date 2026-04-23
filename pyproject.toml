@@ -2,10 +2,10 @@
 # PyPI distribution name. `croc` is taken by an unrelated scientific
 # package; the import name and CLI command are still `croc`.
 name = "croc-cli"
-version = "0.6.1"
+version = "0.6.2"
 description = "A Rust-inspired, Typer-powered CLI for reliably managing project documentation."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Jesse Hartman" }]
 keywords = ["cli", "documentation", "markdown", "refactoring", "typer"]
@@ -16,6 +16,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Documentation",
     "Topic :: Software Development :: Documentation",
@@ -53,7 +55,7 @@ force-include = { "main.py" = "main.py" }
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

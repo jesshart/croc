@@ -6,6 +6,18 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.6.2 — 2026-04-23
+
+### Changed
+
+- **Lowered Python floor from 3.13 to 3.11.** Nothing in the codebase
+  actually needed 3.13; the only 3.12+ API in use
+  (`pathlib.Path.walk()` in `crawl.py`) was swapped for a small
+  `os.walk` adapter. `tomllib` in `config.py` pins the floor at 3.11.
+  CI now runs the full test suite on 3.11, 3.12, and 3.13. No behavior
+  change for existing users; new installs work on any of the three
+  supported interpreters.
+
 ## 0.6.1 — 2026-04-23
 
 ### Fixed
