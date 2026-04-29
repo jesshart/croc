@@ -6,6 +6,29 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.7.0 — 2026-04-29
+
+### Added
+
+- **`croc bask <root> [-o OUT] [--rewrite-refs/--no-rewrite-refs]
+  [--force] [--dry-run] [--strict-refs]`** — flatten a markdown tree
+  into a single output directory. Every `.md` under `root` is emitted
+  to `OUT` with its relative path encoded into the filename via `__`
+  (dunder) joiners; non-md files are ignored. Markdown path-refs
+  (`[text](path.md)`) in body text are rewritten to point at the
+  flattened siblings by default, with anchors preserved; pass
+  `--no-rewrite-refs` for a byte-for-byte raw export. Croc id-refs
+  (`[[id:X]]`) are stable and pass through untouched. Output defaults
+  to `./tmp/<root-name>-bask/`, overridable with `-o`. Refs that
+  escape the bask root or don't resolve to a `.md` in the input
+  surface as `SKIP-REF` notes; pass `--strict-refs` to exit non-zero
+  when any are present. Bask refuses to run when an input path
+  segment already contains the `__` joiner — surfaces every offender
+  at once so the user renames them in one pass. Intended for one-way
+  export to tools that don't traverse directories (LLM context
+  loaders, embedding pipelines, dump-to-clipboard flows); there is
+  no inverse operation. Honors the global `--include-untracked` flag.
+
 ## 0.6.2 — 2026-04-23
 
 ### Changed
