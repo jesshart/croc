@@ -173,6 +173,43 @@ croc refs --unresolved path/to/docs/
 
 Exits 1 when any ref is unresolved. Great for CI on partially-migrated trees.
 
+### `croc bask <root> [-o OUT] [--rewrite-refs/--no-rewrite-refs] [--force] [--dry-run] [--strict-refs]`
+
+Flatten a markdown tree into a single output directory. Every `.md` under `<root>` is emitted to `OUT` with its relative path encoded into the filename via `__` (dunder) joiners. Non-md files are ignored.
+
+```
+thoughts/                         out/
+├── self.md             →         ├── thoughts__self.md
+├── app.md              →         ├── thoughts__app.md
+├── modules/                      ├── thoughts__modules__self.md
+│   ├── self.md         →         ├── thoughts__modules__a.md
+│   ├── a.md            →         └── thoughts__modules__b.md
+│   └── b.md            →
+└── self.md             ↑
+```
+
+```bash
+# Default output is ./tmp/<root-name>-bask/
+croc bask thoughts/
+
+# Explicit output, preview first
+croc bask thoughts/ -o /tmp/dump/ --dry-run
+croc bask thoughts/ -o /tmp/dump/
+
+# Byte-for-byte raw export — bodies untouched
+croc bask thoughts/ -o /tmp/dump/ --no-rewrite-refs
+```
+
+**Why `__`?** A single underscore appears in many filenames; using `_` as the joiner would collide (`a_b/c.md` and `a/b_c.md` both flatten to `a_b_c.md`). With `__` as the joiner and original underscores preserved, every input path produces a unique flattened name. Bask refuses to run when an input directory or filename already contains `__` — surface as a config error so the user renames the offender once instead of getting silent collisions forever.
+
+**Body refs (default on).** Markdown path-refs (`[text](path.md)`) are rewritten to point at the flattened siblings (`[text](thoughts__path.md)`). Anchors are preserved (`#section` carries through). Croc id-refs (`[[id:X]]`) pass through untouched — they don't depend on path. Refs that escape the bask root or don't resolve to a `.md` in the input set are left as-is and surfaced as `SKIP-REF` notes; pass `--strict-refs` to exit non-zero when any are present.
+
+Pass `--no-rewrite-refs` for a byte-for-byte raw export — useful when feeding the artifact to a tool that does its own ref rewriting, or when you just want the layout change without any body edits.
+
+**Use case.** Bask is a one-way export. The artifact feeds tools that don't traverse directories well — Claude Code's CLAUDE.md-aware loaders, embedding pipelines, dump-to-clipboard workflows. There is no `unbask` / inverse operation; if you need round-trip, work in the source tree and re-bask.
+
+Honors the global `--include-untracked` flag.
+
 ### `croc lurk <root> [-n N] [--include-frontmatter]`
 
 Reports any `.md` file whose line count exceeds `N` (default `100`). Opinionated guardrail: small docs + id-based refs is the croc design; one 800-line doc defeats the grain the borrow checker rewards. `lurk` makes that editorial take machine-checkable.
@@ -282,7 +319,7 @@ Link text and anchors are preserved. Frontmatter `links` gets a strong entry for
 
 ### `--dry-run`
 
-Every mutating command (`move`, `rename`, `init --adopt`, `init --adopt --migrate-refs`, `attack`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
+Every mutating command (`move`, `rename`, `init --adopt`, `init --adopt --migrate-refs`, `crawl`, `bask`, `molt`, `attack`) accepts `--dry-run`. It runs every validation and prints the plan but writes nothing.
 
 ### `--include-untracked` / `--no-include-untracked` (global)
 
@@ -294,7 +331,7 @@ Global flag — name mirrors `git stash --include-untracked`. Controls which fil
 | `--include-untracked` | Tracked + untracked-but-not-ignored. Useful while drafting new docs before committing. |
 | Outside a git repo | Flag has no effect; every file is walked. |
 
-Gitignored files are never touched when the walk is git-backed — same envelope in both modes. Applies to `check`, `index`, `move`, `rename`, `init --adopt`, `crawl`, `molt`, `refs`, `lurk`, `attack`, and `hunt`.
+Gitignored files are never touched when the walk is git-backed — same envelope in both modes. Applies to `check`, `index`, `move`, `rename`, `init --adopt`, `crawl`, `molt`, `refs`, `lurk`, `bask`, `attack`, and `hunt`.
 
 ```bash
 # Default: only tracked files considered
@@ -470,12 +507,14 @@ repos:
 croc/
 ├── croc/
 │   ├── __init__.py
+│   ├── bask.py        # flatten a markdown tree into a single dir
 │   ├── check.py       # borrow checker; pure over list[Doc]
 │   ├── crawl.py       # scaffold plain-markdown trees from source
 │   └── ops.py         # transformations: move, rename, init, adopt, molt
 ├── main.py            # Typer CLI — thin wrapper around ops
 ├── tests/
 │   ├── conftest.py    # shared fixtures (tmp_path trees)
+│   ├── test_bask.py   # flatten, ref rewriting, CLI surface
 │   ├── test_check.py  # parser + five rules
 │   ├── test_cli.py    # Typer CLI surface + exit codes
 │   ├── test_crawl.py  # plan/build, filters, adopt/molt cycle

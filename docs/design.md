@@ -74,6 +74,7 @@ Shipped:
 | `croc init`    | Create `.croc.toml`. With `--adopt`, scaffold/augment frontmatter and migrate markdown path refs to the croc dialect (default on; `--no-migrate-refs` opts out). Idempotent on re-run. |
 | `croc molt`    | Reverse adoption. Rewrites `[[id:X]]` body refs back to plain markdown, strips croc-specific frontmatter fields, removes `.croc.toml`. Transactional; requires `check` to pass first. |
 | `croc refs`    | Report markdown-style path refs across the tree and whether they resolve. Read-only. |
+| `croc bask`    | Flatten a markdown tree into a single output directory; encodes the original path into each filename via `__` joiners. Rewrites markdown path-refs to point at the flattened siblings (default on). One-way export. |
 
 Every mutating command (`move`, `rename`, `init --adopt`) accepts
 `--dry-run`, which runs all validation and prints the plan without

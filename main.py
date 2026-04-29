@@ -8,6 +8,7 @@ import pathlib
 import typer
 
 from croc.attack import attack_tree
+from croc.bask import BaskError, plan_bask
 from croc.check import TreeError, build_index, check, load_tree, scan_symlinks
 from croc.config import ConfigError, load_config
 from croc.crawl import _plan_crawl_with_stats, apply_plan, resolve_file_filter
@@ -398,6 +399,102 @@ def crawl_cmd(
 
     n_skips = _render_actions(actions, dry_run=dry_run, verb_label="crawl")
     if strict_refs and adopt and n_skips:
+        raise typer.Exit(code=1)
+
+
+@app.command("bask")
+def bask_cmd(
+    ctx: typer.Context,
+    root: pathlib.Path = typer.Argument(
+        ...,
+        help="Markdown tree to flatten.",
+    ),
+    output: pathlib.Path = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output directory. Defaults to ./tmp/<root-name>-bask/.",
+    ),
+    rewrite_refs: bool = typer.Option(
+        True,
+        "--rewrite-refs/--no-rewrite-refs",
+        help=(
+            "Rewrite markdown path-refs (`[text](path.md)`) in body "
+            "text to point at the flattened siblings. On by default; "
+            "pass --no-rewrite-refs for a byte-for-byte raw export."
+        ),
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing files."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview actions; do not write."),
+    strict_refs: bool = typer.Option(
+        False,
+        "--strict-refs",
+        help=(
+            "Exit non-zero if any SKIP-REF notes were emitted. Use in "
+            "CI so unresolvable refs are not silently shipped in a "
+            "flattened artifact."
+        ),
+    ),
+) -> None:
+    """Flatten a markdown tree into a single output directory.
+
+    Every `.md` file under `root` is emitted to `output` with its
+    relative path encoded into the filename via `__` joiners. Non-md
+    files are ignored. Markdown path-refs (`[text](path.md)`) in
+    bodies are rewritten to point at the flattened siblings by
+    default; `[[id:X]]` croc refs are stable and pass through
+    untouched. Pass `--no-rewrite-refs` for a byte-for-byte raw
+    export.
+
+    Intended for one-way export to tools that don't traverse
+    directories. There is no `unbask` / inverse operation.
+    """
+    if not root.exists() or not root.is_dir():
+        typer.echo(f"bask FAILED: {root}: not a directory", err=True)
+        raise typer.Exit(code=1)
+
+    if output is None:
+        output = pathlib.Path("tmp") / f"{root.name}-bask"
+
+    git_files = _file_filter_for(ctx, root)
+
+    try:
+        planned, skip_notes = plan_bask(root, output, git_files=git_files, rewrite_refs=rewrite_refs)
+    except BaskError as e:
+        typer.echo(f"bask FAILED: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+    if not planned:
+        typer.echo(f"bask FAILED: no .md files found under {root}", err=True)
+        raise typer.Exit(code=1)
+
+    to_create: list[tuple[pathlib.Path, str]] = []
+    n_existing = 0
+    actions: list[str] = list(skip_notes)
+    cwd = pathlib.Path.cwd()
+    for out_path, content in planned:
+        try:
+            display = out_path.relative_to(cwd)
+        except ValueError:
+            display = out_path
+        if out_path.exists() and not force:
+            n_existing += 1
+            continue
+        to_create.append((out_path, content))
+        actions.append(f"BASK {display}")
+
+    if not dry_run and to_create:
+        apply_plan(to_create, force=True)
+
+    if n_existing:
+        typer.secho(
+            f"note: {n_existing} existing file(s) kept (pass --force to overwrite)",
+            err=True,
+            fg=typer.colors.YELLOW,
+        )
+
+    n_skips = _render_actions(actions, dry_run=dry_run, verb_label="bask")
+    if strict_refs and n_skips:
         raise typer.Exit(code=1)
 
 
