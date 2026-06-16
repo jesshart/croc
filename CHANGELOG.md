@@ -6,6 +6,8 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.8.0 — 2026-06-16
+
 ### Changed
 
 - **`.croc.toml` is now discovered by walking up** from the doc-tree
