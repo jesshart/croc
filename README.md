@@ -151,7 +151,7 @@ uv run croc check examples/thoughts-from-code/thoughts
 
 ### `croc molt <root> [--dry-run]`
 
-Reverse adoption. Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into `[text](path.md)` plain markdown, strips croc-specific frontmatter fields (`id`, `kind`, `links`), and removes `.croc.toml`. The tree must pass `croc check` first.
+Reverse adoption. Rewrites every `[[id:X]]` / `[[see:X]]` body ref back into `[text](path.md)` plain markdown and strips croc-specific frontmatter fields (`id`, `kind`, `links`). `.croc.toml` is left in place — it's yours to keep or remove; molt only notes that a tree-local one remains. The tree must pass `croc check` first.
 
 | Before                                    | After                                |
 | ----------------------------------------- | ------------------------------------ |
@@ -229,8 +229,10 @@ Works on any markdown tree, adopted or not (no frontmatter required). Honors the
 
 Scans source files for user-declared regex patterns in `.croc.toml` `[[trace]]` entries. Each match's capture group is resolved to a `.md` file by filename stem (`"revenue"` → `revenue.md`), and the source path is recorded in that doc's `tracks:` frontmatter list.
 
+`.croc.toml` is discovered by walking up from `<root>` to the git repo root, so it can live at the project root next to `pyproject.toml` (a tree-local file at `<root>` still wins, for back-compat):
+
 ```toml
-# .croc.toml at the tree root
+# .croc.toml — at the git repo root (or the tree root)
 version = "0.1"
 
 [[trace]]
@@ -238,6 +240,8 @@ name = "persist_parquet"
 pattern = '''persist_parquet\(["']([^"']+)["']\)'''
 code_globs = ["src/**/*.py"]
 ```
+
+A repo with several doc trees can keep one repo-root file and namespace per-tree patterns under `[trees."<path>"]` tables (keyed by each tree's path relative to the file; quote keys containing `/`). A per-tree table's `trace`/`hunt`/`version` override the top-level defaults for that tree.
 
 ```bash
 croc attack thoughts/

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import yaml
 
+from croc.gitutil import git_repo_root
 from croc.ops import OpError
 
 
@@ -54,7 +55,7 @@ def hunt_tree(
     if not tree_root.is_dir():
         raise OpError(f"{tree_root}: not a directory")
 
-    repo_root = _git_repo_root(tree_root)
+    repo_root = git_repo_root(tree_root)
     if repo_root is None:
         raise OpError(f"{tree_root}: hunt requires a git repo")
 
@@ -107,28 +108,6 @@ def _read_tracks(raw: str) -> list[str]:
     if not isinstance(tracks, list):
         return []
     return [t for t in tracks if isinstance(t, str)]
-
-
-def _git_repo_root(start: pathlib.Path) -> pathlib.Path | None:
-    """Return `git rev-parse --show-toplevel` as a resolved path, or
-    `None` when `start` isn't inside a git repo.
-
-    Duplicated from `croc.attack` for now — deliberate module-local
-    copy while both helpers live in isolation; extract to a shared
-    module once a third caller emerges.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return pathlib.Path(result.stdout.strip()).resolve()
 
 
 def _git_changed_paths(repo_root: pathlib.Path, *, base: str | None) -> set[str]:

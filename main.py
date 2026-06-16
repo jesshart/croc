@@ -519,10 +519,10 @@ def molt_cmd(
 ) -> None:
     """Reverse croc adoption.
 
-    Rewrites id-based body refs back to plain markdown links, strips
-    croc-specific frontmatter fields, and removes `.croc.toml`. The
-    tree must pass `croc check` first. See README for the full syntax
-    mapping.
+    Rewrites id-based body refs back to plain markdown links and strips
+    croc-specific frontmatter fields. `.croc.toml` is left in place —
+    it's yours to keep or remove. The tree must pass `croc check` first.
+    See README for the full syntax mapping.
     """
     git_files = _file_filter_for(ctx, root)
     try:
@@ -639,7 +639,12 @@ def attack_cmd(
         ),
     ),
 ) -> None:
-    """Scan code per `.croc.toml` `[[trace]]` patterns; write `tracks:` to docs."""
+    """Scan code per the `.croc.toml` trace patterns; write `tracks:` to docs.
+
+    The config is discovered by walking up from ROOT to the git repo
+    root, so it can live at the project root. See the docs for the
+    `trace`/`trees` schema.
+    """
     # Attack's file filter must cover the whole repo — code lives above
     # the tree root — so we pass `include_untracked` through and let
     # attack_tree derive the filter at the git repo root itself.

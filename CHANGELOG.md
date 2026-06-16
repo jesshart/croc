@@ -6,6 +6,30 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Changed
+
+- **`.croc.toml` is now discovered by walking up** from the doc-tree
+  `ROOT` to the git repo root, so the repo-scoped trace/hunt config can
+  live at the project root next to `pyproject.toml` instead of buried in
+  the docs subtree. A tree-local `.croc.toml` at `ROOT` is still found
+  first, so existing layouts keep working. Discovery is bounded by the
+  git repo root; outside a git repo only the tree-local file is read.
+- **Multiple doc trees per repo**: a single `.croc.toml` can namespace
+  per-tree config under `[trees."<path>"]` tables, keyed by each tree's
+  path relative to the file. A per-tree table's `trace`/`hunt`/`version`
+  override the top-level defaults for that tree; omitted fields inherit.
+- **`croc molt` no longer touches `.croc.toml`.** It previously stripped
+  the `version` marker and deleted or rewrote the file; now it leaves the
+  file byte-for-byte intact (yours to keep or remove) and only emits a
+  `NOTE` that a tree-local one was left in place. The `version` marker is
+  an inert management signal — nothing branches on its value.
+
+### Internal
+
+- Extracted the duplicated `git_repo_root` helper from `attack`/`hunt`
+  into `croc/gitutil.py`; `config` is now the third caller. Removed the
+  dead `_molt_croc_toml` strip helper.
+
 ## 0.7.0 — 2026-04-29
 
 ### Added

@@ -12,7 +12,6 @@ from croc.check import check, load_tree, parse_frontmatter
 from croc.ops import (
     OpError,
     _has_marker,
-    _molt_croc_toml,
     _molt_frontmatter,
     _propose_id,
     _slugify,
@@ -992,7 +991,7 @@ class TestMolt:
         assert "[[id:" not in self_content
         assert "[[see:" not in self_content
         assert "[[id:registry|" not in self_content
-        # One MOLT action per changed file, plus REMOVE for the marker
+        # One MOLT action per changed file.
         assert any("MOLT design/self.md" in a for a in actions)
 
     def test_anchor_preserved(self, tmp_path, write_doc):
@@ -1137,18 +1136,20 @@ class TestMolt:
     # can't be reached end-to-end through `molt_tree` without a tree
     # that already fails `check` — which molt refuses on principle.
 
-    def test_croc_toml_removed(self, tmp_path, write_doc):
+    def test_croc_toml_left_in_place(self, tmp_path, write_doc):
         write_doc(tmp_path, "x.md", "x")
-        (tmp_path / ".croc.toml").write_text('version = "0.1"\n')
+        original = 'version = "0.1"\n'
+        (tmp_path / ".croc.toml").write_text(original)
         actions = molt_tree(tmp_path)
-        assert not (tmp_path / ".croc.toml").exists()
-        assert any("REMOVE .croc.toml" in a for a in actions)
+        # molt no longer touches the file — left byte-for-byte, just noted.
+        assert (tmp_path / ".croc.toml").read_text() == original
+        assert any("NOTE .croc.toml left in place" in a for a in actions)
 
-    def test_no_croc_toml_no_remove_action(self, tmp_path, write_doc):
-        """If there's no marker, molt doesn't emit a REMOVE action."""
+    def test_no_croc_toml_no_note_action(self, tmp_path, write_doc):
+        """If there's no `.croc.toml`, molt doesn't emit a NOTE action."""
         write_doc(tmp_path, "x.md", "x")
         actions = molt_tree(tmp_path)
-        assert not any("REMOVE" in a for a in actions)
+        assert not any("NOTE .croc.toml" in a for a in actions)
 
     def test_refuses_on_broken_tree(self, sample_tree):
         """Can't molt an unsound tree — same precondition as rename."""
@@ -1201,8 +1202,6 @@ class TestMolt:
         new_target = (tmp_path / "target.md").read_text()
         assert "[target](target.md)" in new_src
         assert "# Target content" in new_target
-        # Marker should be gone too
-        assert not (tmp_path / ".croc.toml").exists()
 
     def test_unmanaged_files_untouched_on_error(self, tmp_path, write_doc):
         """A tree with a non-croc .md file can't pass `check`, so molt
@@ -1713,47 +1712,12 @@ class TestGitFilesFilter:
 
 
 # ---------------------------------------------------------------------------
-# Molt `.croc.toml` symmetry — strip only the `version` marker; preserve
-# foreign config. Adds the mirror-image to `_molt_frontmatter`'s
-# croc/foreign split.
+# `.croc.toml` lifecycle — molt leaves the file in place (the user's to keep
+# or remove); `_has_marker` drives `init` idempotency.
 # ---------------------------------------------------------------------------
 
 
 class TestMoltCrocToml:
-    def test_strip_marker_only_returns_none(self):
-        assert _molt_croc_toml('version = "0.1"\n') is None
-
-    def test_strip_marker_with_preceding_comment_returns_none(self):
-        # The default `.croc.toml` ships a comment directly above the
-        # marker; dropping the marker should drop the comment too.
-        assert _molt_croc_toml('# croc tree root marker.\nversion = "0.1"\n') is None
-
-    def test_strip_preserves_trace_block(self):
-        original = (
-            'version = "0.1"\n\n[[trace]]\nname = "persist_parquet"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
-        )
-        result = _molt_croc_toml(original)
-        assert result is not None
-        assert 'version = "0.1"' not in result
-        assert "[[trace]]" in result
-        assert 'name = "persist_parquet"' in result
-
-    def test_strip_idempotent_on_already_molted(self):
-        # Post-molt content (no version line) fed back through the
-        # stripper is unchanged except for normalization to a trailing
-        # newline.
-        original = '[[trace]]\nname = "x"\n'
-        result = _molt_croc_toml(original)
-        assert result == '[[trace]]\nname = "x"\n'
-
-    def test_does_not_strip_table_scoped_version(self):
-        # `version` inside a table (indented by belonging to `[package]`)
-        # is a foreign key that happens to share the name.
-        original = '[package]\nversion = "1.0"\n'
-        result = _molt_croc_toml(original)
-        # Unchanged.
-        assert result == original
-
     def test_has_marker_positive(self):
         assert _has_marker('version = "0.1"\n')
         assert _has_marker('# comment\nversion = "0.1"\n')
@@ -1769,25 +1733,24 @@ class TestMoltCrocToml:
         # header belongs to a table, not the root.
         assert not _has_marker('[[trace]]\nname = "x"\nversion = "0.1"\n')
 
-    def test_molt_tree_removes_marker_only_file(self, tmp_path, write_doc):
-        # A tree with just the default marker file → same pre-feature
-        # behavior: `.croc.toml` deleted after molt.
-        (tmp_path / ".croc.toml").write_text('version = "0.1"\n')
+    def test_molt_tree_leaves_marker_only_file(self, tmp_path, write_doc):
+        # A tree with just the default marker file → molt leaves it
+        # untouched and notes it.
+        original = 'version = "0.1"\n'
+        (tmp_path / ".croc.toml").write_text(original)
         write_doc(tmp_path, "a.md", "a")
         actions = molt_tree(tmp_path)
-        assert not (tmp_path / ".croc.toml").exists()
-        assert any(a.startswith("REMOVE .croc.toml") for a in actions)
+        assert (tmp_path / ".croc.toml").read_text() == original
+        assert any(a.startswith("NOTE .croc.toml left in place") for a in actions)
 
-    def test_molt_tree_rewrites_config_file(self, tmp_path, write_doc):
+    def test_molt_tree_leaves_config_file_untouched(self, tmp_path, write_doc):
         original = 'version = "0.1"\n\n[[trace]]\nname = "p"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
         (tmp_path / ".croc.toml").write_text(original)
         write_doc(tmp_path, "a.md", "a")
         actions = molt_tree(tmp_path)
-        assert (tmp_path / ".croc.toml").exists()
-        final = (tmp_path / ".croc.toml").read_text()
-        assert 'version = "0.1"' not in final
-        assert "[[trace]]" in final
-        assert any(a.startswith("REWRITE .croc.toml") for a in actions)
+        # Both the marker and the foreign config survive byte-for-byte.
+        assert (tmp_path / ".croc.toml").read_text() == original
+        assert any(a.startswith("NOTE .croc.toml left in place") for a in actions)
 
     def test_molt_tree_dry_run_does_not_touch_config(self, tmp_path, write_doc):
         original = 'version = "0.1"\n\n[[trace]]\nname = "p"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
@@ -1802,14 +1765,10 @@ class TestMoltCrocToml:
         original_toml = 'version = "0.1"\n\n[[trace]]\nname = "p"\npattern = \'foo\'\ncode_globs = ["**/*.py"]\n'
         (tmp_path / ".croc.toml").write_text(original_toml)
         write_doc(tmp_path, "a.md", "a")
-        # Molt: version gone, trace preserved.
+        # Molt: file left fully intact (no stripping).
         molt_tree(tmp_path)
-        molted = (tmp_path / ".croc.toml").read_text()
-        assert "[[trace]]" in molted
-        assert 'version = "0.1"' not in molted
-        # Re-init: marker restored ahead of foreign content.
+        assert (tmp_path / ".croc.toml").read_text() == original_toml
+        # Re-init: marker already present → no-op, file unchanged.
         actions = init_tree(tmp_path)
-        assert any(a.startswith("UPDATE .croc.toml") for a in actions)
-        rerestored = (tmp_path / ".croc.toml").read_text()
-        assert 'version = "0.1"' in rerestored
-        assert "[[trace]]" in rerestored
+        assert actions == []
+        assert (tmp_path / ".croc.toml").read_text() == original_toml

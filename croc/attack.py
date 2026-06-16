@@ -24,7 +24,6 @@ field removed entirely.
 from __future__ import annotations
 
 import pathlib
-import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -33,6 +32,7 @@ import yaml
 from croc.check import DocPath
 from croc.config import CrocConfig
 from croc.crawl import resolve_file_filter
+from croc.gitutil import git_repo_root
 from croc.ops import OpError, _commit, _dump_yaml
 
 
@@ -70,7 +70,7 @@ def attack_tree(
     if not config.traces:
         raise OpError(f"no [[trace]] patterns configured in {tree_root / '.croc.toml'}")
 
-    repo_root = _git_repo_root(tree_root)
+    repo_root = git_repo_root(tree_root)
     if repo_root is None:
         raise OpError(f"{tree_root}: attack requires a git repo (paths anchored to `git rev-parse --show-toplevel`)")
 
@@ -214,21 +214,6 @@ def _split_frontmatter(raw: str) -> tuple[dict, str, bool]:
     if not isinstance(fm, dict):
         raise OpError("frontmatter is not a mapping")
     return fm, body, True
-
-
-def _git_repo_root(start: pathlib.Path) -> pathlib.Path | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return pathlib.Path(result.stdout.strip()).resolve()
 
 
 def _iter_matched_code_files(
