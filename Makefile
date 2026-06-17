@@ -1,4 +1,4 @@
-.PHONY: install test check lint format smoke pypi clean
+.PHONY: install test check lint format smoke pypi clean docs docs-serve
 
 install:
 	uv sync --group dev
@@ -51,3 +51,17 @@ pypi:
 
 clean:
 	rm -rf dist build *.egg-info .pytest_cache
+
+# Regenerate docs/commands.md from the Typer CLI source. The file is
+# gitignored — the CI workflow regenerates it before each `zensical build`.
+docs:
+	uv run typer main.py utils docs --name croc --output docs/commands.md --title "Commands"
+	@# Strip the truncated **Commands**: index block — Typer truncates each entry
+	@# at 45 chars (the live CLI doesn't). Per-command ## sections below carry
+	@# the full descriptions; Zensical's right-side TOC re-creates the index.
+	@sed -i.bak -e '/^\*\*Commands\*\*:$$/,/^## /{ /^## /!d; }' docs/commands.md && rm docs/commands.md.bak
+	@# Prepend icon frontmatter — Typer doesn't emit any.
+	@printf -- '---\nicon: lucide/terminal\n---\n\n%s' "$$(cat docs/commands.md)" > docs/commands.md
+
+docs-serve: docs
+	uv run zensical serve

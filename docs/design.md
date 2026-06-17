@@ -1,4 +1,8 @@
-# croc — design notes
+---
+icon: lucide/lightbulb
+---
+
+# Design notes
 
 > A Rust-inspired, Typer-powered CLI for reliably managing project docs.
 
@@ -72,13 +76,21 @@ Shipped:
 | `croc move`    | Relocate a file. IDs travel with the file; no refs rewritten.   |
 | `croc rename`  | Rename an id. Every strong and weak reference rewritten atomically, validate-then-commit. |
 | `croc init`    | Create `.croc.toml`. With `--adopt`, scaffold/augment frontmatter and migrate markdown path refs to the croc dialect (default on; `--no-migrate-refs` opts out). Idempotent on re-run. |
-| `croc molt`    | Reverse adoption. Rewrites `[[id:X]]` body refs back to plain markdown, strips croc-specific frontmatter fields, removes `.croc.toml`. Transactional; requires `check` to pass first. |
+| `croc molt`    | Reverse adoption. Rewrites `[[id:X]]` body refs back to plain markdown and strips croc-specific frontmatter fields. Leaves `.croc.toml` in place. Transactional; requires `check` to pass first. |
 | `croc refs`    | Report markdown-style path refs across the tree and whether they resolve. Read-only. |
 | `croc bask`    | Flatten a markdown tree into a single output directory; encodes the original path into each filename via `__` joiners. Rewrites markdown path-refs to point at the flattened siblings (default on). One-way export. |
+| `croc lurk`    | Report `.md` files that grew past a line-count guardrail. Read-only. |
+| `croc attack`  | Scan code for `.croc.toml` trace patterns and write the resolved source files into each doc's `tracks:` frontmatter. |
+| `croc hunt`    | Alert when a doc's `tracks:` source changed in a git diff but the doc did not. Pre-commit / CI gate. |
 
-Every mutating command (`move`, `rename`, `init --adopt`) accepts
+Every mutating command (`move`, `rename`, `init --adopt`, `attack`) accepts
 `--dry-run`, which runs all validation and prints the plan without
 writing.
+
+`attack` and `hunt` read their config (`[[trace]]`, `[hunt]`) from a
+`.croc.toml` discovered by walking up from the tree root to the git repo
+root — so a repo-wide scan config lives at the project root, with
+optional `[trees."<path>"]` tables for repos hosting several doc trees.
 
 Planned:
 

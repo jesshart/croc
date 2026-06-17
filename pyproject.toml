@@ -40,6 +40,9 @@ dev = [
     "pre-commit>=3.8",
     "ty>=0.0.9",
 ]
+docs = [
+    "zensical>=0.0.43",
+]
 
 [project.scripts]
 croc = "main:main"
