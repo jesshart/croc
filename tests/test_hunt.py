@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from croc.hunt import HuntAlert, _read_tracks, hunt_tree
+from croc.hunt import HuntAlert, _read_mirrors, _read_tracks, hunt_tree
 from croc.ops import OpError
 
 
@@ -35,6 +35,13 @@ def _write(path: pathlib.Path, content: str) -> None:
 def _doc_with_tracks(tracks: list[str], extra_body: str = "") -> str:
     tracks_yaml = "\n".join(f"- {t}" for t in tracks)
     return f"---\nid: x\ntitle: X\nkind: leaf\nlinks: []\ntracks:\n{tracks_yaml}\n---\n\n# X\n{extra_body}"
+
+
+def _doc_with_mirrors(mirror: str, extra_body: str = "") -> str:
+    """A crawl-shaped stub: only a `mirrors:` breadcrumb, no croc
+    frontmatter (id/kind/links). Proves hunt works on un-adopted plain
+    crawl output."""
+    return f"---\nmirrors: {mirror}\n---\n\n# X\n{extra_body}"
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +76,39 @@ class TestReadTracks:
     def test_unterminated_frontmatter(self):
         raw = "---\nid: x\n\nno closing fence\n"
         assert _read_tracks(raw) == []
+
+
+# ---------------------------------------------------------------------------
+# _read_mirrors
+# ---------------------------------------------------------------------------
+
+
+class TestReadMirrors:
+    def test_clean_mirror_string(self):
+        assert _read_mirrors(_doc_with_mirrors("src/producer.py")) == "src/producer.py"
+
+    def test_no_frontmatter(self):
+        assert _read_mirrors("# just a heading\n") is None
+
+    def test_frontmatter_without_mirrors(self):
+        raw = "---\nid: x\ntitle: T\n---\n\nbody\n"
+        assert _read_mirrors(raw) is None
+
+    def test_malformed_yaml(self):
+        raw = "---\nid: [unterminated\n---\nbody\n"
+        assert _read_mirrors(raw) is None
+
+    def test_mirrors_not_a_string(self):
+        raw = "---\nmirrors:\n- a\n- b\n---\nbody\n"
+        assert _read_mirrors(raw) is None
+
+    def test_empty_mirrors(self):
+        raw = "---\nmirrors:\n---\nbody\n"
+        assert _read_mirrors(raw) is None
+
+    def test_unterminated_frontmatter(self):
+        raw = "---\nid: x\n\nno closing fence\n"
+        assert _read_mirrors(raw) is None
 
 
 # ---------------------------------------------------------------------------
@@ -233,3 +273,101 @@ class TestHuntTreeGitFilter:
         allowed: set[pathlib.Path] = set()
         alerts = hunt_tree(committed_repo / "thoughts", strict=True, git_files=allowed)
         assert alerts == []
+
+
+@pytest.fixture
+def mirror_repo(tmp_path):
+    """Repo with a crawl-shaped mirror doc (no tracks, no croc fm):
+    src/producer.py, src/reader.py
+    thoughts/producer.md  (mirrors: src/producer.py)
+    """
+    _init_repo(tmp_path)
+    _write(tmp_path / "src/producer.py", "# initial producer\n")
+    _write(tmp_path / "src/reader.py", "# initial reader\n")
+    _write(tmp_path / "thoughts/producer.md", _doc_with_mirrors("src/producer.py"))
+    _run(tmp_path, "add", "-A")
+    _run(tmp_path, "commit", "-q", "-m", "init")
+    return tmp_path
+
+
+class TestHuntTreeMirrors:
+    def test_file_mirror_change_triggers_alert(self, mirror_repo):
+        # The mirror breadcrumb alone (no tracks:, no attack run) drives drift.
+        _write(mirror_repo / "src/producer.py", "# changed\n")
+        _run(mirror_repo, "add", "src/producer.py")
+        alerts = hunt_tree(mirror_repo / "thoughts", strict=True)
+        assert alerts == [HuntAlert(doc_rel="producer.md", source_rel="src/producer.py")]
+
+    def test_mirror_unrelated_change_no_alert(self, mirror_repo):
+        _write(mirror_repo / "src/reader.py", "# changed\n")
+        _run(mirror_repo, "add", "src/reader.py")
+        alerts = hunt_tree(mirror_repo / "thoughts", strict=True)
+        assert alerts == []
+
+    def test_self_md_dir_mirror_ignored(self, tmp_path):
+        # A directory doc mirrors the directory, not a file — no alert
+        # when a file under it changes.
+        _init_repo(tmp_path)
+        _write(tmp_path / "src/app.py", "# app\n")
+        _write(tmp_path / "thoughts/self.md", _doc_with_mirrors("src"))
+        _run(tmp_path, "add", "-A")
+        _run(tmp_path, "commit", "-q", "-m", "init")
+        _write(tmp_path / "src/app.py", "# changed\n")
+        _run(tmp_path, "add", "src/app.py")
+        alerts = hunt_tree(tmp_path / "thoughts", strict=True)
+        assert alerts == []
+
+    def test_self_md_skipped_even_if_mirror_names_a_changed_file(self, tmp_path):
+        # Pathological self.md whose breadcrumb happens to name a file in
+        # the diff. The self.md skip means it still produces no alert —
+        # this exercises the `p.name != "self.md"` branch directly.
+        _init_repo(tmp_path)
+        _write(tmp_path / "src/app.py", "# app\n")
+        _write(tmp_path / "thoughts/self.md", _doc_with_mirrors("src/app.py"))
+        _run(tmp_path, "add", "-A")
+        _run(tmp_path, "commit", "-q", "-m", "init")
+        _write(tmp_path / "src/app.py", "# changed\n")
+        _run(tmp_path, "add", "src/app.py")
+        alerts = hunt_tree(tmp_path / "thoughts", strict=True)
+        assert alerts == []
+
+    def test_mirror_and_track_same_source_dedup(self, tmp_path):
+        # A doc carrying BOTH a track and a mirror for the same source
+        # must alert exactly once, not twice.
+        _init_repo(tmp_path)
+        _write(tmp_path / "src/a.py", "# a\n")
+        doc = "---\nid: x\ntitle: X\nkind: leaf\nlinks: []\nmirrors: src/a.py\ntracks:\n- src/a.py\n---\n\n# X\n"
+        _write(tmp_path / "thoughts/a.md", doc)
+        _run(tmp_path, "add", "-A")
+        _run(tmp_path, "commit", "-q", "-m", "init")
+        _write(tmp_path / "src/a.py", "# changed\n")
+        _run(tmp_path, "add", "src/a.py")
+        alerts = hunt_tree(tmp_path / "thoughts", strict=True)
+        assert alerts == [HuntAlert(doc_rel="a.md", source_rel="src/a.py")]
+
+    def test_mirror_forgiving_suppressed_when_doc_changed(self, mirror_repo):
+        _write(mirror_repo / "src/producer.py", "# changed\n")
+        _write(
+            mirror_repo / "thoughts/producer.md",
+            _doc_with_mirrors("src/producer.py", extra_body="refreshed\n"),
+        )
+        _run(mirror_repo, "add", "-A")
+        alerts = hunt_tree(mirror_repo / "thoughts", strict=False)
+        assert alerts == []
+
+    def test_mirror_strict_alerts_even_when_doc_changed(self, mirror_repo):
+        _write(mirror_repo / "src/producer.py", "# changed\n")
+        _write(
+            mirror_repo / "thoughts/producer.md",
+            _doc_with_mirrors("src/producer.py", extra_body="refreshed\n"),
+        )
+        _run(mirror_repo, "add", "-A")
+        alerts = hunt_tree(mirror_repo / "thoughts", strict=True)
+        assert len(alerts) == 1
+
+    def test_mirror_base_range(self, mirror_repo):
+        _write(mirror_repo / "src/producer.py", "# changed\n")
+        _run(mirror_repo, "add", "-A")
+        _run(mirror_repo, "commit", "-q", "-m", "update producer")
+        assert len(hunt_tree(mirror_repo / "thoughts", strict=True, base="HEAD~1")) == 1
+        assert hunt_tree(mirror_repo / "thoughts", strict=True, base="HEAD") == []

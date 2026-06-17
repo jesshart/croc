@@ -1,8 +1,12 @@
 """Detect docs whose bound source files changed vs. a git ref.
 
-Inputs: (a) every doc's `tracks:` frontmatter list, read fresh from
-disk; (b) a set of changed paths from `git diff --name-only`. Output:
-one `HuntAlert` per (doc, changed tracked source) pair.
+Inputs: (a) every doc's bound source paths, read fresh from disk — its
+`tracks:` frontmatter list plus its `crawl`-written `mirrors:`
+breadcrumb (a file stub's mirrored source). Directory docs (`self.md`)
+mirror a *directory*, not a file, so their breadcrumb never matches a
+`git diff` path and is skipped — file-mirrors only. (b) a set of
+changed paths from `git diff --name-only`. Output: one `HuntAlert` per
+(doc, changed bound source) pair.
 
 Strict vs forgiving:
 - Strict (default): any tracked source in the diff → alert.
@@ -29,7 +33,7 @@ from croc.ops import OpError
 @dataclass(frozen=True)
 class HuntAlert:
     doc_rel: str  # doc path relative to tree root
-    source_rel: str  # source path relative to repo root, from `tracks:`
+    source_rel: str  # source path relative to repo root, from `tracks:` or `mirrors:`
 
 
 def hunt_tree(
@@ -70,12 +74,22 @@ def hunt_tree(
             raw = p.read_text()
         except OSError:
             continue
-        tracks = _read_tracks(raw)
-        if not tracks:
+        sources = set(_read_tracks(raw))
+        # Fold in crawl's `mirrors:` breadcrumb as an implicit tracked
+        # source: exact, path-based provenance that needs no `attack`
+        # step and never collides on stem. Directory docs (`self.md`)
+        # mirror a *directory*, which never appears verbatim in
+        # `git diff --name-only`, so we skip them rather than prefix-
+        # match (file-mirrors only).
+        if p.name != "self.md":
+            mirror = _read_mirrors(raw)
+            if mirror is not None:
+                sources.add(mirror)
+        if not sources:
             continue
         doc_rel_tree = str(p.relative_to(tree_root))
         doc_rel_repo = str(absp.relative_to(repo_root))
-        for src in tracks:
+        for src in sorted(sources):
             if src not in changed:
                 continue
             if not strict and doc_rel_repo in changed:
@@ -108,6 +122,29 @@ def _read_tracks(raw: str) -> list[str]:
     if not isinstance(tracks, list):
         return []
     return [t for t in tracks if isinstance(t, str)]
+
+
+def _read_mirrors(raw: str) -> str | None:
+    """Extract the `mirrors:` breadcrumb from a doc's frontmatter.
+
+    `crawl` writes `mirrors:` as a single path string — the source file
+    a stub shadows (or, for a `self.md`, the source directory). Same
+    tolerance as `_read_tracks`: returns `None` on missing frontmatter,
+    malformed YAML, a non-mapping, or a non-string / empty value.
+    """
+    if not raw.startswith("---\n"):
+        return None
+    parts = raw.split("---\n", 2)
+    if len(parts) < 3:
+        return None
+    try:
+        fm = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(fm, dict):
+        return None
+    mirrors = fm.get("mirrors")
+    return mirrors if isinstance(mirrors, str) and mirrors else None
 
 
 def _git_changed_paths(repo_root: pathlib.Path, *, base: str | None) -> set[str]:

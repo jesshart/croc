@@ -259,14 +259,16 @@ Requires a git repo (paths are repo-root-relative). Honors the global `--include
 
 ### `croc hunt <root> [--base REF] [--forgiving/--strict]`
 
-Pre-commit / CI gate. Walks every `.md` with a `tracks:` field, compares each listed source path against `git diff --name-only`, and alerts when any bound source file has changed. Exits 1 on any alert.
+Pre-commit / CI gate. Walks every `.md` with a `tracks:` or `mirrors:` field, compares each bound source path against `git diff --name-only`, and alerts when any bound source file has changed. Exits 1 on any alert.
 
 ```bash
 croc hunt thoughts/
-# thoughts/revenue.md tracks changed file src/producer.py
+# thoughts/revenue.md: bound source src/producer.py changed
 #
 # 1 alert (strict mode)
 ```
+
+**Two provenance sources.** A doc's bound sources come from its `tracks:` list (written by `croc attack`) *and* its `mirrors:` breadcrumb (written by `croc crawl`). Honoring `mirrors:` means drift detection works on raw `crawl` output with no `attack` step and no `.croc.toml` — the breadcrumb is an exact, path-based binding that never depends on stem resolution. Directory docs (`self.md`) mirror a *directory*, not a file, so they're skipped (file-mirrors only); a source that is both tracked and mirrored alerts once. Mirror breadcrumbs are matched against `git diff` paths verbatim, so this lines up when `crawl` is run from the repo root (e.g. `croc crawl src/` → `mirrors: src/app.py`). A tree crawled from a subdirectory writes breadcrumbs that aren't repo-root-relative and won't match yet — anchor crawl from the repo root for now.
 
 **Diff scope:**
 
@@ -284,7 +286,7 @@ CLI flags override the config default; `--strict` turns strictness back on when 
 
 ### I/O bindings
 
-Docs can declare a `tracks:` field in frontmatter — a list of source files whose contents are load-bearing for the doc. `croc attack` populates this field by scanning code for user-declared regex patterns; `croc hunt` alerts when any tracked file has changed in a git diff and the bound doc hasn't.
+Docs can declare a `tracks:` field in frontmatter — a list of source files whose contents are load-bearing for the doc. `croc attack` populates this field by scanning code for user-declared regex patterns; `croc hunt` alerts when any tracked file has changed in a git diff and the bound doc hasn't. `hunt` also honors the `mirrors:` breadcrumb that `croc crawl` writes (the source file a stub shadows), so a freshly-crawled tree gets drift detection for free — no `attack` run required.
 
 ```yaml
 ---

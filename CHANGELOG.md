@@ -6,6 +6,26 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+### Changed
+
+- **`croc hunt` now follows `crawl`'s `mirrors:` breadcrumb.** A doc's
+  `mirrors:` source (the file a `crawl`-generated stub shadows) is
+  treated as an implicit tracked source, unioned with `tracks:`, so
+  drift detection works on raw `crawl` output with no `croc attack` step
+  and no stem resolution. This closes a gap where docs whose filename
+  stem repeats across directories (always `self.md` / `__init__.md`,
+  often ordinary repeats like `models.py`) could never be bound by
+  `attack`'s tree-wide stem index and so were invisible to `hunt`.
+  Directory docs (`self.md`) mirror a *directory* and are skipped
+  (file-mirrors only); a source that is both `tracks:`-bound and
+  `mirrors:`-bound alerts once. **On by default with no opt-out** —
+  trees whose docs carry `mirrors:` may surface alerts they previously
+  (silently) missed. The per-alert message is now
+  `"<doc>: bound source <path> changed"`. Mirror matching assumes
+  `crawl` was run from the repo root (so the breadcrumb is repo-root-
+  relative and lines up with `git diff` paths); anchoring subtree-
+  crawled mirror paths to the repo root is a tracked follow-up.
+
 ## 0.8.0 — 2026-06-16
 
 ### Changed

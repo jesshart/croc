@@ -688,7 +688,9 @@ def hunt_cmd(
 ) -> None:
     """Alert when docs' bound source files changed without the docs.
 
-    Intended as a pre-commit hook or CI gate. Exits 1 if any alerts fire.
+    A source is bound via a doc's `tracks:` list (written by `attack`)
+    or its `mirrors:` breadcrumb (written by `crawl`). Intended as a
+    pre-commit hook or CI gate. Exits 1 if any alerts fire.
     """
     git_files = _file_filter_for(ctx, root)
     try:
@@ -709,7 +711,7 @@ def hunt_cmd(
 
     for a in alerts:
         typer.secho(
-            f"{a.doc_rel} tracks changed file {a.source_rel}",
+            f"{a.doc_rel}: bound source {a.source_rel} changed",
             err=True,
             fg=typer.colors.YELLOW,
         )

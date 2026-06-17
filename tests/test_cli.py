@@ -619,6 +619,28 @@ def test_hunt_staged_source_alerts(runner: CliRunner, tmp_path: pathlib.Path) ->
     assert "1 alert (strict mode)" in result.stderr
 
 
+def test_hunt_mirror_only_doc_alerts(runner: CliRunner, tmp_path: pathlib.Path) -> None:
+    """A crawl-shaped doc (only a `mirrors:` breadcrumb — no `tracks:`,
+    no `attack` run) drives drift detection at the CLI."""
+    import subprocess
+
+    _init_repo_with_hunt_fixture(tmp_path)
+    # Plain crawl stub mirroring src/reader.py — no croc frontmatter.
+    (tmp_path / "thoughts" / "reader.md").write_text("---\nmirrors: src/reader.py\n---\n\n# reader.py\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add mirror doc"], cwd=tmp_path, check=True)
+    # Clean tree first: the mirror doc must not spuriously alert.
+    clean = runner.invoke(app, ["hunt", str(tmp_path / "thoughts")])
+    assert clean.exit_code == 0, clean.output
+    # Stage a change to the mirrored source → alert.
+    (tmp_path / "src" / "reader.py").write_text("# changed\n")
+    subprocess.run(["git", "add", "src/reader.py"], cwd=tmp_path, check=True)
+    result = runner.invoke(app, ["hunt", str(tmp_path / "thoughts")])
+    assert result.exit_code == 1
+    assert "reader.md" in result.stderr
+    assert "bound source src/reader.py changed" in result.stderr
+
+
 def test_hunt_base_flag(runner: CliRunner, tmp_path: pathlib.Path) -> None:
     """--base REF switches from --cached to commit-range diff."""
     import subprocess
