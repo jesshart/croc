@@ -6,6 +6,8 @@ pre-1.0 and does not yet commit to semver.
 
 ## Unreleased
 
+## 0.9.0 — 2026-06-17
+
 ### Changed
 
 - **`croc hunt` now follows `crawl`'s `mirrors:` breadcrumb.** A doc's
