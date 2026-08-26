@@ -230,7 +230,7 @@ def in_any_span(pos: int, spans: list[tuple[int, int]]) -> bool:
     so tree structures cost more overhead than they save.
     """
     for start, end in spans:
-        if start <= pos < end:
+        if start <= pos <= end:
             return True
         if pos < start:
             return False
