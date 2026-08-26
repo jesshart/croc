@@ -6,7 +6,7 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
 
-> *ids are owners, links are borrows, `croc check` is the borrow checker.*
+> *ids are owners, links are borrows, `croc check` is the borrow checker, and `croc rename` is an atomic refactor.*
 
 A Rust-inspired, Typer-powered CLI for reliably managing project documentation.
 
@@ -46,7 +46,7 @@ Replace path-based references with **stable ids**. A reference like `[[id:regist
 Requires Python `>=3.13` and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-# Install
+# Install dependencies
 uv sync
 
 # Check the included example
