@@ -46,7 +46,7 @@ Replace path-based references with **stable ids**. A reference like `[[id:regist
 Requires Python `>=3.13` and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-# Install
+# Install dependencies
 uv sync
 
 # Check the included example
