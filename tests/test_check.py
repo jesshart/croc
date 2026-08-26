@@ -135,6 +135,20 @@ class TestRules:
         )
         assert check(load_tree(tmp_path)) == []
 
+    def test_bare_link_defaults_to_strong_lifetime(self, tmp_path, write_doc):
+        # A frontmatter link that omits `strength` defaults to strong, so a
+        # bare link to a missing target must trip E-LIFETIME (Rule 4). This
+        # pins the default and keeps Rules 4 and 5 agreeing on it.
+        write_doc(
+            tmp_path,
+            "a.md",
+            "a",
+            links=[{"to": "ghost"}],
+            body="[[id:ghost]]",
+        )
+        errors = check(load_tree(tmp_path))
+        assert any("E-LIFETIME" in e for e in errors)
+
     def test_schema_missing_field(self, tmp_path):
         (tmp_path / "x.md").write_text("---\nid: a\ntitle: t\nkind: leaf\n---\nbody")
         errors = check(load_tree(tmp_path))

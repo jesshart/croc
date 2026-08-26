@@ -420,7 +420,7 @@ def check(docs: list[Doc]) -> list[str]:
         # Rule 4: lifetime — strong links in frontmatter must resolve.
         for link in links:
             target = DocId(link["to"])
-            strength = link.get("strength", "weak")
+            strength = link.get("strength", "strong")
             if strength == "strong" and target not in index:
                 errors.append(
                     f"E-LIFETIME {d.path}: strong link to '{target}' outlives its target (deleted without retargeting)"
